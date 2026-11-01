@@ -4,11 +4,12 @@ from urllib.parse import parse_qs
 import httpx
 import pytest
 
-from metaads import budget
-from metaads.budget import decide, new_budget, run_job
+from metaads import jobrunner
+from metaads.budget import run_job
 from metaads.config import load_settings
 from metaads.jobs import JobStore
 from metaads.meta import GraphClient
+from metaads.rules import decide, new_budget
 
 S = load_settings()
 RULES = S.budget_increase
@@ -85,7 +86,7 @@ class Notes:
 @pytest.fixture
 def pings(monkeypatch):
     calls: list[str] = []
-    monkeypatch.setattr(budget, "ping", lambda url, suffix="": calls.append(suffix))
+    monkeypatch.setattr(jobrunner, "ping", lambda url, suffix="": calls.append(suffix))
     return calls
 
 

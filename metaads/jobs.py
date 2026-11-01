@@ -5,6 +5,7 @@ import sqlite3
 import time
 import uuid
 from contextlib import closing
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -140,6 +141,11 @@ class JobStore:
         with closing(self._conn()) as c:
             return c.execute("SELECT COUNT(*) FROM video_calls WHERE ts>=?", (since,)).fetchone()[0]
 
+    def video_calls_today(self) -> int:
+        """Video generations since local midnight: what the daily video cap counts."""
+        midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        return self.video_calls_since(midnight)
+
     # ---- budget increases made by metaads.budget: when each ad set was last raised (budgets are in paise)
     def last_budget_increases(self) -> dict[str, float]:
         """ad set id -> time of its most recent increase, for every ad set that ever had one."""
@@ -174,3 +180,18 @@ class JobStore:
         with closing(self._conn()) as c:
             rows = c.execute("SELECT * FROM meta_uploads WHERE upload_id=? ORDER BY job_id", (upload_id,)).fetchall()
         return [dict(r) for r in rows]
+
+    # ---- what the planner needs to tell winning hooks from fresh ones
+    def uploaded_jobs(self) -> list[dict[str, Any]]:
+        """Jobs that have an ad set on Meta: job id, language code, hook text, body (None = default), made-at time
+        and ad set id."""
+        with closing(self._conn()) as c:
+            rows = c.execute("SELECT j.id AS job_id, j.language, j.text, j.body, j.created, u.adset_id FROM jobs j "
+                             "JOIN meta_uploads u ON u.job_id = j.id WHERE u.adset_id IS NOT NULL").fetchall()
+        return [dict(r) for r in rows]
+
+    def hook_body_pairs(self) -> set[tuple[str, str, str | None]]:
+        """(language code, hook text, body) of every ad ever made that did not fail: pairs not to repeat."""
+        with closing(self._conn()) as c:
+            rows = c.execute("SELECT language, text, body FROM jobs WHERE status != 'failed'").fetchall()
+        return {(r["language"], r["text"], r["body"]) for r in rows}

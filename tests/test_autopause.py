@@ -4,8 +4,10 @@ from urllib.parse import parse_qs
 import httpx
 import pytest
 
-from metaads import autopause
-from metaads.autopause import campaign_languages, evaluate, run_job
+from metaads import jobrunner
+from metaads.adaccount import campaign_languages
+from metaads.autopause import run_job
+from metaads.rules import evaluate
 from metaads.config import load_settings
 from metaads.meta import GraphClient
 
@@ -84,7 +86,7 @@ class Notes:
 @pytest.fixture
 def pings(monkeypatch):
     calls: list[str] = []
-    monkeypatch.setattr(autopause, "ping", lambda url, suffix="": calls.append(suffix))
+    monkeypatch.setattr(jobrunner, "ping", lambda url, suffix="": calls.append(suffix))
     return calls
 
 

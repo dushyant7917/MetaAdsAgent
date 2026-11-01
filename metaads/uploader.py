@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import media
+from .adaccount import campaign_env_var
 from .config import Settings, _resolve_path
 from .jobs import JobStore
 from .locks import CPU_LOCK
@@ -61,7 +62,7 @@ class MetaUploader:
         missing = [k for k in REQUIRED_ENV if not os.environ.get(k, "").strip()]
         campaigns = {}
         for code in sorted(languages):
-            var = f"META_CAMPAIGN_ID_{self.s.languages[code].upper()}"
+            var = campaign_env_var(self.s.languages[code])
             if os.environ.get(var, "").strip():
                 campaigns[code] = os.environ[var].strip()
             else:

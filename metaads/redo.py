@@ -119,7 +119,7 @@ class RedoPlanner:
                 start = i
                 break
         redo_stages = STAGES[start:]
-        if "video" in redo_stages and self.p._video_calls_today() + 1 > self.p.s.limits.daily_video_cap:
+        if "video" in redo_stages and self.p.store.video_calls_today() + 1 > self.p.s.limits.daily_video_cap:
             raise ValidationError(f"Daily video cap {self.p.s.limits.daily_video_cap} is reached, so a new Veo clip "
                                   f"cannot be made today.")
 
@@ -192,7 +192,7 @@ class RedoPlanner:
         a = json.loads(row["args"])
         job = self._job(a["job_id"])
         start = a["start"]
-        if start <= STAGES.index("video") and self.p._video_calls_today() + 1 > self.p.s.limits.daily_video_cap:
+        if start <= STAGES.index("video") and self.p.store.video_calls_today() + 1 > self.p.s.limits.daily_video_cap:
             raise ValidationError("Daily video cap reached, so a new Veo clip cannot be made today.")
         if not self.p.store.set_redo_plan_status(plan_id, "pending", "approved"):
             raise ValidationError(f"Plan {plan_id} was already used.")

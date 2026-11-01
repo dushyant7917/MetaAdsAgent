@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import media
+from .bodies import body_folder
 from .config import Settings, load_settings
 from .jobs import JobStore
 from .locks import CPU_LOCK
@@ -100,7 +101,7 @@ class Pipeline:
 
     # ---------- validation ----------
     def _find_body(self, language: str, wanted: str | None) -> Path:
-        folder = Path(self.s.paths.body_dir) / language
+        folder = body_folder(self.s, language)
         name = wanted or self.s.default_body
         exact = folder / (name if name.endswith(".mp4") else name + ".mp4")
         if exact.exists():
@@ -128,10 +129,6 @@ class Pipeline:
             raise ValidationError(f"Duration must be one of {self.s.hook.durations}")
         return {"language": lang, "text": text, "body": body.stem, "duration": duration}
 
-    def _video_calls_today(self) -> int:
-        midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
-        return self.store.video_calls_since(midnight)
-
     # ---------- submit / resume ----------
     def submit(self, items: list[dict[str, Any]], chat_id: str | None = None, background: bool = True) -> str:
         """Validate everything first (all-or-nothing), then run one ad per item. Returns the batch id."""
@@ -158,7 +155,7 @@ class Pipeline:
             for i, pick in zip(pending, picks):                  # a text longer than the longest clip gets that clip
                 clean[i]["duration"] = pick["clip_seconds"]
                 clean[i]["estimate"] = json.dumps(pick)
-        used = self._video_calls_today()
+        used = self.store.video_calls_today()
         if used + len(clean) > self.s.limits.daily_video_cap:
             raise ValidationError(f"Daily video cap {self.s.limits.daily_video_cap}: {used} used today, "
                                   f"{len(clean)} requested")
@@ -294,7 +291,7 @@ class Pipeline:
         clip = work / "video.mp4"
         if not clip.exists():
             stage("video")
-            if self._video_calls_today() >= self.s.limits.daily_video_cap:
+            if self.store.video_calls_today() >= self.s.limits.daily_video_cap:
                 raise RuntimeError(f"Daily video cap of {self.s.limits.daily_video_cap} reached")
             self.store.record_video_call()
             tmp = work / "video.part.mp4"

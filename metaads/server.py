@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -15,9 +16,12 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from . import media
+from .adaccount import make_client, managed_account
+from .bodies import available_bodies
 from .config import load_env_file, load_settings
 from .notify import TelegramNotifier
 from .pipeline import Pipeline, ValidationError
+from .planning import Planner
 from .redo import RedoPlanner
 from .uploader import MetaUploader
 
@@ -183,9 +187,26 @@ def approve_redo(plan_id: str) -> dict:
 
 
 @mcp.tool()
+def plan_new_ads() -> dict:
+    """How many NEW ads to create now, from what is left of this month's budget (read-only, creates nothing).
+
+    Use it when the owner asks how many new ads to make today, or how the monthly budget stands. It looks at the
+    running ad sets (how much they will still spend before the pause rule stops them, which are winning and will be
+    raised) and returns, per language campaign: `proven_hook_ads` (a winning hook, by `hook_job_id`, to put on the
+    listed unused `bodies`) and `new_hook_ads` (a count of brand-new hooks on the default body). Also returns the
+    budget figures, `at_risk_adsets`, `scaling_winners` and `notes`. Report these numbers; do not make up others.
+    """
+    try:
+        account_id, campaigns = managed_account(S, os.environ)
+        return Planner(S, make_client(S), account_id, campaigns, pipeline().store).run()
+    except RuntimeError as e:                    # PlanningError, GraphError and missing .env values
+        return {"error": str(e)}
+
+
+@mcp.tool()
 def list_languages() -> dict:
     """Supported language codes with names, and the available body videos per language."""
-    bodies = {code: sorted(p.stem for p in (Path(S.paths.body_dir) / code).glob("*.mp4")) for code in S.languages}
+    bodies = {code: available_bodies(S, code) for code in S.languages}
     return {"languages": S.to_dict()["languages"], "default_body": S.default_body, "bodies": bodies}
 
 

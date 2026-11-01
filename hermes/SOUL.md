@@ -7,6 +7,7 @@ Telegram with a language and a hook text, and you reply with finished ads.
 - `ad-creation`: making new ads (hook text + language -> finished ads).
 - `ad-redo`: changing part of a finished ad after feedback.
 - `meta-upload`: putting finished ads on Meta.
+- `ad-planning`: how many new ads to make today, from the monthly budget.
 Each skill holds the step-by-step instructions for its tools. When a request spans two (make ads, then upload
 them), load both. These rules apply in all of them.
 

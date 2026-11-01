@@ -125,3 +125,19 @@ budget_increase:               # metaads.budget, daily at 5:00 AM IST (scripts/i
   min_hours_between: 70        # hours since this tool's last increase of the ad set before it may be raised again
   min_results_first_increase: 50   # an ad set never raised before needs this many results (learning phase over)
   max_daily_budget: 500000     # paise (Rs 5,000): a budget is never raised above this
+
+ad_planning:                   # metaads.planning: how many new ads the rest of the month can afford. Amounts here are Rs, not paise
+  monthly_budget_inr: 200000   # Rs 2,00,000 for all managed campaigns together; a new ad set's daily budget is meta.daily_budget
+  performing_min_results: 50   # an ad set that reached this many results is a winner (autopause did not stop it on the way), and its hook is proven; a later pause does not undo that
+  reserve_pct: 20              # of the budget left, kept unspent for cost swings and ad sets that overdeliver (first 3 weeks)
+  late_reserve_pct: 10         # the same, from day late_month_from_day on: less time is left for the forecast to be wrong
+  late_month_from_day: 22      # day of the month (IST) the last week starts
+  max_new_per_day: 20
+  trend_days: 3                # full days of recent delivery that set an ad set's forward spend and cost per result
+  retire_hook_after_failures: 3 # a winning hook stops being reused once its newest this-many decided ad sets in a row were paused before performing_min_results; a later win resets it
+  tie_break_order: [hi, te, kn, mr, gu, bn]   # language codes: who gets the extra ads when languages tie (all weigh the same); unlisted ones come last
+  exploit_share: 0.6           # share of new ads that put a proven hook on another body; the rest are new hooks
+  prior_win_rate: 0.15         # chance a new ad becomes a winner, until enough ad sets have a decided outcome
+  prior_weight: 10             # how many decided ad sets that prior counts as
+  default_loser_spend_inr: 200 # spend before a losing ad set is paused, until some have been paused
+  winner_horizon_days: 7       # days at the full daily budget counted as the cost of a winner
