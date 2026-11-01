@@ -25,6 +25,10 @@ CREATE TABLE IF NOT EXISTS meta_uploads (
   job_id TEXT PRIMARY KEY, upload_id TEXT, status TEXT, stage TEXT, error TEXT,
   video_id TEXT, image_hash TEXT, adset_id TEXT, ad_id TEXT, updated REAL
 );
+CREATE TABLE IF NOT EXISTS budget_increases (
+  adset_id TEXT, ts REAL, old_budget INTEGER, new_budget INTEGER
+);
+CREATE INDEX IF NOT EXISTS budget_increases_adset ON budget_increases (adset_id, ts);
 """
 
 META_FIELDS = {"upload_id", "status", "stage", "error", "video_id", "image_hash", "adset_id", "ad_id"}
@@ -135,6 +139,18 @@ class JobStore:
     def video_calls_since(self, since: float) -> int:
         with closing(self._conn()) as c:
             return c.execute("SELECT COUNT(*) FROM video_calls WHERE ts>=?", (since,)).fetchone()[0]
+
+    # ---- budget increases made by metaads.budget: when each ad set was last raised (budgets are in paise)
+    def last_budget_increases(self) -> dict[str, float]:
+        """ad set id -> time of its most recent increase, for every ad set that ever had one."""
+        with closing(self._conn()) as c:
+            rows = c.execute("SELECT adset_id, MAX(ts) AS ts FROM budget_increases GROUP BY adset_id").fetchall()
+        return {r["adset_id"]: r["ts"] for r in rows}
+
+    def record_budget_increase(self, adset_id: str, old_budget: int, new_budget: int, ts: float | None = None) -> None:
+        with closing(self._conn()) as c, c:
+            c.execute("INSERT INTO budget_increases VALUES (?,?,?,?)",
+                      (adset_id, time.time() if ts is None else ts, old_budget, new_budget))
 
     # ---- Meta uploads: what already exists on Meta for a job, so a rerun never repeats a call or an entity
     def upsert_meta_upload(self, job_id: str, **fields: Any) -> None:

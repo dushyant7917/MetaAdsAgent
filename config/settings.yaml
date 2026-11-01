@@ -109,7 +109,7 @@ limits:
   max_batch_items: 10
   daily_video_cap: 40
 
-autopause:                     # metaads.autopause, every 2 hours (scripts/install_timer.sh): pauses losing ACTIVE ad sets
+autopause:                     # metaads.autopause, every 2 hours (scripts/install_autopause_timer.sh): pauses losing ACTIVE ad sets
   result_action_type: start_trial_total   # Ads Manager's "Results" for a START_TRIAL ad set, read from metric_field
   metric_field: conversions
   zero_results_max_spend: 150  # no results at all: pause once lifetime spend passes this (Rs)
@@ -119,3 +119,9 @@ autopause:                     # metaads.autopause, every 2 hours (scripts/insta
     - [6, 200]
     - [3, 225]
     - [1, 250]
+
+budget_increase:               # metaads.budget, daily at 5:00 AM IST (scripts/install_budget_increase_timer.sh): raises ACTIVE ad set budgets
+  increase_pct: 20
+  min_hours_between: 70        # hours since this tool's last increase of the ad set before it may be raised again
+  min_results_first_increase: 50   # an ad set never raised before needs this many results (learning phase over)
+  max_daily_budget: 500000     # paise (Rs 5,000): a budget is never raised above this

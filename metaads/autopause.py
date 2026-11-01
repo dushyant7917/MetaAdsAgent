@@ -2,7 +2,7 @@
 
 Meta calls per run: ONE read (every ACTIVE ad set of the account with its lifetime spend and conversions nested in)
 and, only when something is flagged and --apply is given, ONE batch write that pauses all flagged ad sets.
-Run it with `python -m metaads.autopause` (dry run) or `... --apply` (pauses for real); scripts/install_timer.sh
+Run it with `python -m metaads.autopause` (dry run) or `... --apply` (pauses for real); scripts/install_autopause_timer.sh
 schedules it. Only ever pauses, never reactivates.
 """
 from __future__ import annotations
@@ -83,9 +83,9 @@ def campaign_languages(settings: Settings, environ) -> dict[str, str]:
     return out
 
 
-def fetch_active_adsets(client: GraphClient, account_id: str) -> list[dict]:
+def fetch_active_adsets(client: GraphClient, account_id: str, fields: str = ADSET_FIELDS) -> list[dict]:
     """One account-level read (more only when over PAGE_SIZE active ad sets)."""
-    params = {"fields": ADSET_FIELDS, "filtering": ACTIVE_ONLY, "limit": PAGE_SIZE}
+    params = {"fields": fields, "filtering": ACTIVE_ONLY, "limit": PAGE_SIZE}
     rows: list[dict] = []
     while True:
         data = client.get(f"act_{account_id}/adsets", **params)
@@ -196,7 +196,7 @@ def main(argv: list[str] | None = None) -> int:
 
     load_env_file()
     settings = load_settings()
-    heartbeat = os.environ.get("HEALTHCHECK_URL", "").strip()
+    heartbeat = os.environ.get("HEALTHCHECK_URL_AUTOPAUSE", "").strip()
     lock_path = Path(settings.paths.db).parent / "autopause.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with open(lock_path, "w") as lock:

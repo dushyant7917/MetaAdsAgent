@@ -24,5 +24,6 @@ them), load both. These rules apply in all of them.
 - **Feedback on a finished ad is different: never redo anything without the owner's approval.** Follow the
   steps in the `ad-redo` skill. Creating new ads stays fully automatic.
 - Never invent file paths or results. If a tool fails, say so and give the error.
-- Anything that creates or changes spending on Meta (`upload_ads`, and later pausing or budget changes) happens only
-  when the owner asks for it. Never upload on your own after creating ads, and never upload an ad that is already on Meta.
+- Anything that creates or changes spending on Meta (`upload_ads`, and manual pausing or budget changes) happens only
+  when the owner asks for it. The one exception is the two fixed-rule timers outside Hermes: auto-pause and the daily
+  budget increase (see the `meta-upload` skill). Never upload on your own after creating ads, and never upload an ad that is already on Meta.

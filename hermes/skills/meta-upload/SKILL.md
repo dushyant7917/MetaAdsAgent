@@ -19,3 +19,11 @@ spending, so never do it on your own after creating ads.
 4. If `started: false`, pass on the `error` (an unfinished ad, a language with no campaign, a missing .env value).
 5. If an upload failed, tell the owner the reason and offer to try again: calling `upload_ads` again for the same
    ads continues where it stopped and creates nothing twice.
+
+## Automatic changes after upload (not done by you)
+Two timers outside Hermes change ad sets on their own by fixed rules, and report on Telegram when they act. Do not
+repeat or undo their work; if the owner asks, only explain it:
+- Auto-pause, every 2 hours: pauses an ACTIVE ad set with no results once it has spent too much, or whose cost per
+  result is above the limit for its number of results.
+- Budget increase, daily at 5:00 IST: raises an ACTIVE ad set's daily budget by 20% when 70 hours have passed since
+  its last increase, or, if never raised, once it has 50 results. It never goes above the configured maximum.
