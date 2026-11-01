@@ -1,6 +1,6 @@
 import httpx
 
-from adhook.notify import TelegramNotifier
+from metaads.notify import TelegramNotifier
 
 
 def test_ads_go_to_the_requesting_chat_but_reports_go_to_the_channel(monkeypatch):

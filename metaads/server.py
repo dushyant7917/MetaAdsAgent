@@ -1,6 +1,6 @@
-"""MCP server (stdio) exposing the ad-hook tools to Hermes or any MCP client.
+"""MCP server (stdio) exposing the Meta ads tools to Hermes or any MCP client.
 
-Run: uv run python -m adhook.server
+Run: uv run python -m metaads.server
 Logs go to stderr; stdout is the protocol channel.
 """
 from __future__ import annotations
@@ -19,13 +19,15 @@ from .config import load_env_file, load_settings
 from .notify import TelegramNotifier
 from .pipeline import Pipeline, ValidationError
 from .redo import RedoPlanner
+from .uploader import MetaUploader
 
 logging.basicConfig(stream=sys.stderr, level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
-load_env_file()          # keys live in the Hermes profile's .env (ADHOOK_ENV_FILE), never in the repo
-mcp = FastMCP("adhook")
+load_env_file()          # keys live in the Hermes profile's .env (METAADS_ENV_FILE), never in the repo
+mcp = FastMCP("metaads")
 S = load_settings()
 _pipeline: Pipeline | None = None
+_uploader: MetaUploader | None = None
 
 
 def pipeline() -> Pipeline:
@@ -33,6 +35,14 @@ def pipeline() -> Pipeline:
     if _pipeline is None:
         _pipeline = Pipeline(S, notifier=TelegramNotifier.from_env())
     return _pipeline
+
+
+def uploader() -> MetaUploader:
+    global _uploader
+    if _uploader is None:
+        p = pipeline()
+        _uploader = MetaUploader(S, p.store, notifier=p.notifier)
+    return _uploader
 
 
 def redo() -> RedoPlanner:
@@ -87,10 +97,46 @@ def get_batch_status(batch_id: str) -> dict:
 
 @mcp.tool()
 def list_ads(limit: int = 10) -> dict:
-    """Recent ads, newest first: job_id, language, text, status and file paths. Use it to find which ad the owner means."""
-    return {"ads": [{"job_id": j["id"], "language": j["language"], "text": j["text"][:100], "status": j["status"],
-                     "body": j["body"], "ad_path": j["ad_path"], "redo_of": j["redo_of"]}
-                    for j in pipeline().store.recent_jobs(max(1, min(limit, 30)))]}
+    """Recent ads, newest first: job_id, language, text, status, file paths and whether the ad is on Meta
+    (meta_status, meta_ad_id). Use it to find which ad the owner means."""
+    store = pipeline().store
+    ads = []
+    for j in store.recent_jobs(max(1, min(limit, 30))):
+        meta = store.get_meta_upload(j["id"]) or {}
+        ads.append({"job_id": j["id"], "language": j["language"], "text": j["text"][:100], "status": j["status"],
+                    "body": j["body"], "ad_path": j["ad_path"], "redo_of": j["redo_of"],
+                    "meta_status": meta.get("status"), "meta_ad_id": meta.get("ad_id")})
+    return {"ads": ads}
+
+
+@mcp.tool()
+def upload_ads(job_ids: list[str] | None = None, batch_id: str | None = None, chat_id: str | None = None,
+               dry_run: bool = False, start_time: str | None = None) -> dict:
+    """Upload finished ads to Meta: a new ACTIVE ad set (own budget, the language's states) and ad for EACH ad,
+    in the language's campaign. Spends money, so call it only when the owner asks to upload.
+
+    Give job_ids (from list_ads / get_batch_status) OR a batch_id to upload every finished ad of that batch.
+    Returns at once with an upload_id; the result (ad set and ad ids, or the reason it failed) arrives in the chat.
+    Ads already on Meta are skipped, and asking again for failed ones continues where they stopped. The whole
+    request is refused up front if an ad is unfinished or a .env value is missing.
+    The ad sets start at the next 6:00 IST. Pass start_time (ISO 8601, e.g. "2026-11-03T09:00", read as IST when no
+    offset is given) ONLY when the owner names a start time.
+    dry_run=True only shows the exact requests that would be sent, nothing is sent to Meta.
+    """
+    try:
+        return uploader().submit(job_ids=job_ids, batch_id=batch_id, chat_id=chat_id, dry_run=dry_run,
+                                start_time=start_time)
+    except ValidationError as exc:
+        return {"started": False, "error": str(exc)}
+
+
+@mcp.tool()
+def get_upload_status(upload_id: str) -> dict:
+    """Progress of an upload_ads request: per-ad status, stage, Meta video/ad set/ad ids and errors."""
+    try:
+        return uploader().status(upload_id)
+    except KeyError:
+        return {"error": f"Unknown upload {upload_id}"}
 
 
 @mcp.tool()

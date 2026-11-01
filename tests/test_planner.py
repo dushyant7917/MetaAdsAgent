@@ -3,8 +3,8 @@ import re
 import pytest
 import yaml
 
-from adhook.config import PROJECT_ROOT, load_settings
-from adhook.planner import plan_poster_window
+from metaads.config import PROJECT_ROOT, load_settings
+from metaads.planner import plan_poster_window
 
 S = load_settings()
 PRODUCT = yaml.safe_load((PROJECT_ROOT / "config" / "product.yaml").read_text())

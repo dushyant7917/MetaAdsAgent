@@ -41,7 +41,7 @@ def transcribe_words(media_path: str | Path, language: str,
     `language` is the ISO code (hi, ta, ...). Audio extraction happens internally with ffmpeg.
     """
     s = settings or load_settings()
-    with tempfile.TemporaryDirectory(prefix="adhook_") as tmp:
+    with tempfile.TemporaryDirectory(prefix="metaads_") as tmp:
         wav = media.extract_audio(media_path, Path(tmp) / "audio.wav", s)
         audio = _read_wav(wav)   # ffmpeg-made 16 kHz mono PCM; bypasses faster-whisper's PyAV decoder
         model = _get_model(s)

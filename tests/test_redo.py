@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from adhook.pipeline import ValidationError
-from adhook.redo import RedoPlanner
+from metaads.pipeline import ValidationError
+from metaads.redo import RedoPlanner
 from test_pipeline import Fakes, _pipeline, env  # noqa: F401  (env is a fixture)
 
 HI = {"language": "hi", "text": "Aisi news video banani hai?"}
@@ -50,6 +50,7 @@ def test_a_bad_image_regenerates_the_chain_but_keeps_the_duration(env):
     assert new["redo_of"] == job and new["duration"] == p.store.get_job(job)["duration"]
     assert Path(p.store.get_job(job)["ad_path"]).exists()                           # the old ad is kept
     assert rec.videos[-1][1].startswith("Redo · ")
+    assert f" · id {rec.videos[-1][1].rsplit(' · id ', 1)[1]}" in rec.videos[-1][1]
 
 
 def test_wrong_poster_moment_reuses_image_clip_and_whisper_and_gives_the_planner_the_feedback(env):

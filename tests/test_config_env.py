@@ -1,4 +1,4 @@
-from adhook.config import load_env_file
+from metaads.config import load_env_file
 
 
 def test_env_file_parsing(tmp_path, monkeypatch):
@@ -19,7 +19,7 @@ def test_env_file_parsing(tmp_path, monkeypatch):
 
 
 def test_example_file_has_no_values():
-    from adhook.config import PROJECT_ROOT
+    from metaads.config import PROJECT_ROOT
     for line in (PROJECT_ROOT / ".env.example").read_text().splitlines():
         if line and not line.startswith("#"):
             assert line.partition("=")[2] == "", f"{line!r} must not contain a value"

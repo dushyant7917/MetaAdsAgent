@@ -5,13 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from adhook import media
-from adhook.config import Settings, load_settings
-from adhook.jobs import JobStore
-from adhook.pipeline import Pipeline, Services, ValidationError
-from adhook.durations import DurationEstimateError
-from adhook.planner import plan_poster_window
-from adhook.videogen import VideoBlockedError
+from metaads import media
+from metaads.config import Settings, load_settings
+from metaads.jobs import JobStore
+from metaads.pipeline import Pipeline, Services, ValidationError
+from metaads.durations import DurationEstimateError
+from metaads.planner import plan_poster_window
+from metaads.videogen import VideoBlockedError
 
 BASE = load_settings()
 
@@ -207,7 +207,7 @@ def test_daily_video_cap_refuses_whole_batch(env):
 import sqlite3
 import time
 
-from adhook import pipeline as pipeline_mod
+from metaads import pipeline as pipeline_mod
 
 DEAD = f"999999999@{pipeline_mod._boot_id()}:dead"          # a server process that no longer exists
 

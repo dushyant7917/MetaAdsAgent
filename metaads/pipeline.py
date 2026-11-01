@@ -23,7 +23,7 @@ from .notify import Notifier, NullNotifier
 from .planner import PlanResult, plan_poster_window
 from .durations import DurationEstimateError, pick_durations
 
-log = logging.getLogger("adhook.pipeline")
+log = logging.getLogger("metaads.pipeline")
 
 
 class ValidationError(ValueError):
@@ -175,7 +175,7 @@ class Pipeline:
     def _start(self, batch_id: str, job_ids: list[str], background: bool) -> None:
         if background:
             threading.Thread(target=self._run_batch, args=(batch_id, job_ids), daemon=True,
-                             name=f"adhook-{batch_id}").start()
+                             name=f"metaads-{batch_id}").start()
         else:
             self._run_batch(batch_id, job_ids)
 
@@ -250,7 +250,7 @@ class Pipeline:
                     log.exception("watchdog tick failed")
                 time.sleep(self.s.watchdog.check_seconds)
 
-        thread = threading.Thread(target=loop, daemon=True, name="adhook-watchdog")
+        thread = threading.Thread(target=loop, daemon=True, name="metaads-watchdog")
         thread.start()
         return thread
 
@@ -356,7 +356,7 @@ class Pipeline:
         warn = "\n⚠ The voice may be cut off at the end of the hook (the clip was probably too short)." \
             if meta["speech_may_be_cut_off"] else ""
         self._safe(self.notifier.send_video, chat_id, ad_dst,
-                   f"{'Redo · ' if job.get('redo_of') else ''}Ad {job['idx'] + 1}/{total} · {lang} · {text[:120]}{warn}")
+                   f"{'Redo · ' if job.get('redo_of') else ''}Ad {job['idx'] + 1}/{total} · {lang} · {text[:120]} · id {job_id}{warn}")
         return meta
 
     # ---------- status ----------

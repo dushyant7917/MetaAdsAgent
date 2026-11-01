@@ -29,7 +29,7 @@ def generate_image(text: str, out_png: str | Path, settings: Settings | None = N
     if not b64:
         raise RuntimeError("Image API returned no image data")
     out = Path(out_png)
-    with tempfile.TemporaryDirectory(prefix="adhook_") as tmp:
+    with tempfile.TemporaryDirectory(prefix="metaads_") as tmp:
         raw = Path(tmp) / "raw.png"
         raw.write_bytes(base64.b64decode(b64))
         media.normalize_image(raw, out, settings=s)   # gpt-image sizes are not 9:16: fit + black bars, no crop

@@ -1,10 +1,10 @@
 import pytest
 
-from adhook import durations
-from adhook.config import load_settings
+from metaads import durations
+from metaads.config import load_settings
 import re
 
-from adhook.durations import DurationEstimateError, build_prompt, clip_for, pick_durations
+from metaads.durations import DurationEstimateError, build_prompt, clip_for, pick_durations
 
 S = load_settings()
 

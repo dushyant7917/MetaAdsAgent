@@ -2,9 +2,9 @@ import subprocess
 
 import pytest
 
-from adhook import media
-from adhook.config import load_settings
-from adhook.media import PosterWindow
+from metaads import media
+from metaads.config import load_settings
+from metaads.media import PosterWindow
 
 S = load_settings()
 

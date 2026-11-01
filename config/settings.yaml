@@ -1,4 +1,4 @@
-# adhook settings. Secrets (API keys) come from environment variables only, never from this file:
+# metaads settings. Secrets (API keys) come from environment variables only, never from this file:
 #   OPENAI_API_KEY, GEMINI_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_USERS
 
 paths:
@@ -10,7 +10,7 @@ paths:
   ads_dir: ~/thinclient_drives/DailySto/Ads      # <ads_dir>/<lang>/
   # relative paths below are resolved against the project root
   work_dir: data/work
-  db: data/adhook.db
+  db: data/metaads.db
 
 languages:            # code -> name used in the video prompt
   hi: Hindi
@@ -79,8 +79,31 @@ watchdog:
   check_seconds: 60            # how often it looks for jobs left behind by a dead server and for stuck jobs
   stuck_minutes: 25            # a running job that has not reached a new stage for this long is reported
 
+meta:                          # upload to Meta (Marketing API). Secrets and IDs come from .env (META_*), see .env.example
+  api_version: v25.0
+  daily_budget: 50000          # paise per ad set (50000 = Rs 500)
+  conversion_event: START_TRIAL
+  cta: INSTALL_MOBILE_APP
+  country: IN                  # used when a language has no states below
+  android_os_min: "10.0"
+  android_os_max: ""           # empty = no upper bound
+  age_min: 25
+  genders: [1]
+  video_ready_timeout: 900     # seconds to wait for Meta to finish processing the uploaded videos
+  video_poll_seconds: 5
+  regions_cache: data/meta_regions.json   # state -> Meta region key, looked up once per state ever
+  language_states:             # geo-target each language's ads to its states instead of all of India
+    hi: [Himachal Pradesh, Uttarakhand, Haryana, Delhi, Uttar Pradesh, Bihar, Jharkhand, Rajasthan, Madhya Pradesh, Chhattisgarh]
+    ta: [Tamil Nadu]
+    mr: [Maharashtra]
+    gu: [Gujarat]
+    bn: [West Bengal]
+    te: [Telangana, Andhra Pradesh]
+    kn: [Karnataka]
+
 limits:
   api_concurrency: 4
+  max_meta_upload: 10          # ads per upload_ads request
   image_rpm: 140
   video_rpm: 4
   max_batch_items: 10

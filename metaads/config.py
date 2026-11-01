@@ -51,19 +51,19 @@ def _resolve_path(value: str) -> str:
 
 @lru_cache(maxsize=1)
 def load_settings(path: str | None = None) -> Settings:
-    cfg_path = Path(path or os.environ.get("ADHOOK_SETTINGS") or PROJECT_ROOT / "config" / "settings.yaml")
+    cfg_path = Path(path or os.environ.get("METAADS_SETTINGS") or PROJECT_ROOT / "config" / "settings.yaml")
     data = yaml.safe_load(cfg_path.read_text())
     data["paths"] = {k: _resolve_path(v) for k, v in data["paths"].items()}
     return Settings(data)
 
 
 def load_env_file(path: str | None = None) -> int:
-    """Load KEY=VALUE lines from the project's .env (or ADHOOK_ENV_FILE) without overriding real env vars.
+    """Load KEY=VALUE lines from the project's .env (or METAADS_ENV_FILE) without overriding real env vars.
 
     Hermes gives stdio MCP servers a filtered environment, so the server reads the keys from .env itself
     instead of having secrets copied into Hermes's config.yaml. Returns how many variables were set.
     """
-    path = path or os.environ.get("ADHOOK_ENV_FILE") or str(PROJECT_ROOT / ".env")
+    path = path or os.environ.get("METAADS_ENV_FILE") or str(PROJECT_ROOT / ".env")
     if not path or not Path(path).is_file():
         return 0
     loaded = 0

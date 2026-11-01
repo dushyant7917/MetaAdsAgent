@@ -1,7 +1,7 @@
 import pytest
 
-from adhook.config import load_settings
-from adhook.ratelimit import RateLimiter
+from metaads.config import load_settings
+from metaads.ratelimit import RateLimiter
 
 S = load_settings()
 

@@ -8,7 +8,7 @@ from typing import Protocol
 
 import httpx
 
-log = logging.getLogger("adhook.notify")
+log = logging.getLogger("metaads.notify")
 MAX_VIDEO_BYTES = 50 * 1024 * 1024        # Bot API upload limit
 
 

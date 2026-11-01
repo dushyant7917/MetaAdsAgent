@@ -21,8 +21,13 @@ CREATE TABLE IF NOT EXISTS redo_plans (
   id TEXT PRIMARY KEY, job_id TEXT, args TEXT, status TEXT, created REAL
 );
 CREATE TABLE IF NOT EXISTS video_calls (ts REAL);
+CREATE TABLE IF NOT EXISTS meta_uploads (
+  job_id TEXT PRIMARY KEY, upload_id TEXT, status TEXT, stage TEXT, error TEXT,
+  video_id TEXT, image_hash TEXT, adset_id TEXT, ad_id TEXT, updated REAL
+);
 """
 
+META_FIELDS = {"upload_id", "status", "stage", "error", "video_id", "image_hash", "adset_id", "ad_id"}
 JOB_FIELDS = {"status", "stage", "error", "hook_path", "ad_path", "attempts", "duration", "body", "estimate", "owner"}
 
 
@@ -130,3 +135,26 @@ class JobStore:
     def video_calls_since(self, since: float) -> int:
         with closing(self._conn()) as c:
             return c.execute("SELECT COUNT(*) FROM video_calls WHERE ts>=?", (since,)).fetchone()[0]
+
+    # ---- Meta uploads: what already exists on Meta for a job, so a rerun never repeats a call or an entity
+    def upsert_meta_upload(self, job_id: str, **fields: Any) -> None:
+        bad = set(fields) - META_FIELDS
+        if bad:
+            raise ValueError(f"Unknown meta upload fields: {bad}")
+        fields["updated"] = time.time()
+        cols = ", ".join(fields)
+        marks = ", ".join("?" for _ in fields)
+        sets = ", ".join(f"{k}=excluded.{k}" for k in fields)
+        with closing(self._conn()) as c, c:
+            c.execute(f"INSERT INTO meta_uploads (job_id, {cols}) VALUES (?, {marks}) "
+                      f"ON CONFLICT(job_id) DO UPDATE SET {sets}", (job_id, *fields.values()))
+
+    def get_meta_upload(self, job_id: str) -> dict[str, Any] | None:
+        with closing(self._conn()) as c:
+            row = c.execute("SELECT * FROM meta_uploads WHERE job_id=?", (job_id,)).fetchone()
+        return dict(row) if row else None
+
+    def meta_uploads_for(self, upload_id: str) -> list[dict[str, Any]]:
+        with closing(self._conn()) as c:
+            rows = c.execute("SELECT * FROM meta_uploads WHERE upload_id=? ORDER BY job_id", (upload_id,)).fetchall()
+        return [dict(r) for r in rows]
