@@ -1,0 +1,33 @@
+# What the poster demo shows and when to show it. Fed to the planner LLM.
+
+poster_description: >
+  A short demo video of the app creating a news video in about a second.
+  It is a vertical full-screen video shown over the reporter while the voice-over talks about it.
+
+rule: >
+  The poster is shown while the voice-over speaks the words that point at the video the app makes: the phrase
+  meaning "such a news video" or "this kind of news video" (the word for "such/this kind of", then "news video").
+  Choose that phrase plus the one word that follows it (for example the verb or a word like "only"), so it is
+  a short natural phrase of about three to five spoken words. Never choose a whole sentence, and do not start
+  at the first "news" of the hook if that word is not part of the "such a news video" phrase. If the phrase
+  occurs more than once, use the first occurrence.
+
+# Used only if the LLM answer is unusable: first word matching any of these (any script) anchors the window.
+fallback_keywords:
+  - news
+  - न्यूज
+  - न्यूज़
+  - খবর
+  - ન્યૂઝ
+  - ನ್ಯೂಸ್
+  - न्यूज
+  - செய்தி
+  - న్యూస్
+  - video
+  - वीडियो
+  - ভিডিও
+  - વિડિઓ
+  - ವೀಡಿಯೊ
+  - व्हिडिओ
+  - வீடியோ
+  - వీడియో

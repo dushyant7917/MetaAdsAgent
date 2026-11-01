@@ -1,0 +1,32 @@
+.venv/
+data/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# build output
+build/
+dist/
+
+# logs
+*.log
+
+# editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+# credentials: never commit
+secrets/
+*service-account*.json
+*-sa.json
+*.pem
+*.key

@@ -1,0 +1,87 @@
+# adhook settings. Secrets (API keys) come from environment variables only, never from this file:
+#   OPENAI_API_KEY, GEMINI_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_USERS
+
+paths:
+  ffmpeg: ~/.hermes/tools/ffmpeg-9.0.1-linux-x64/bin/ffmpeg
+  ffprobe: ~/.hermes/tools/ffmpeg-9.0.1-linux-x64/bin/ffprobe
+  body_dir: ~/D7/DailyStoryTutorialVideos      # <body_dir>/<lang>/<body>.mp4
+  poster_dir: ~/D7/PosterDemoVideos            # <poster_dir>/<lang>/poster_demo.mp4
+  hooks_dir: ~/thinclient_drives/DailySto/Hooks  # <hooks_dir>/<lang>/
+  ads_dir: ~/thinclient_drives/DailySto/Ads      # <ads_dir>/<lang>/
+  # relative paths below are resolved against the project root
+  work_dir: data/work
+  db: data/adhook.db
+
+languages:            # code -> name used in the video prompt
+  hi: Hindi
+  bn: Bengali
+  gu: Gujarati
+  kn: Kannada
+  mr: Marathi
+  ta: Tamil
+  te: Telugu
+
+default_body: navy-darkyellow-yellowbox
+
+models:
+  image: gpt-image-2
+  image_quality: high
+  image_size: 1024x1536        # closest 2:3 portrait; fitted into 9:16 with black bars (top/bottom), never cropped
+  video: veo-3.1-lite-generate-001   # cheapest Veo; PREVIEW on Vertex, no support guarantee. GA: veo-3.1-fast-generate-001
+  video_resolution: 720p
+  # Model used by the poster-window planner (verified against the key). If it ever stops working the planner
+  # logs it and falls back to the keyword heuristic instead of failing the ad.
+  llm: gemini-3.7-flash
+  whisper: medium              # faster-whisper, multilingual
+  whisper_compute_type: int8
+  whisper_cpu_threads: 2
+
+generation:                    # Veo on Google Cloud (Vertex AI): the gpt-image thumbnail -> image-to-video
+  # Project, region and credentials come from the environment (.env): GOOGLE_CLOUD_PROJECT,
+  # GOOGLE_CLOUD_LOCATION (default us-central1) and GOOGLE_APPLICATION_CREDENTIALS (service-account JSON path).
+  prompt: 'The reporter in image speaks "{text}" in {language}'
+  poll_seconds: 10
+  timeout_seconds: 900
+
+video:
+  width: 1080
+  height: 1920
+  fps: 30
+  crf: 18
+  preset: veryfast
+  audio_rate: 48000
+  audio_bitrate: 192k
+  loudness_target: -16         # LUFS applied to the hook voice-over
+
+hook:
+  durations: [4, 6, 8]         # Veo clip lengths allowed
+  lead_tail_seconds: 0.5       # silence allowance added to the estimated speech time
+  duration_retries: 3          # extra attempts of the Gemini speaking-time call (texts without an answer are re-asked)
+
+poster:
+  min_seconds: 1.5             # shortest time the poster stays on screen
+  pad_before: 0.05
+  pad_after: 0.10
+  min_speed: 0.5
+  max_speed: 3.5
+
+merge:
+  fade_seconds: 0.5
+  transition: fade             # any ffmpeg xfade transition (fade, fadeblack, slideleft, ...)
+
+timeouts:                      # seconds; a call that hangs fails (the job retries) instead of blocking forever
+  image_request: 300           # one gpt-image-2 request
+  llm_request: 120             # one Gemini text request (speaking time, poster planner)
+  vertex_request: 120          # one Vertex call (start, poll, download); the whole Veo wait is generation.timeout_seconds
+  ffmpeg: 900                  # one ffmpeg / ffprobe run (Whisper is local and has no timeout)
+
+watchdog:
+  check_seconds: 60            # how often it looks for jobs left behind by a dead server and for stuck jobs
+  stuck_minutes: 25            # a running job that has not reached a new stage for this long is reported
+
+limits:
+  api_concurrency: 4
+  image_rpm: 140
+  video_rpm: 4
+  max_batch_items: 10
+  daily_video_cap: 40
