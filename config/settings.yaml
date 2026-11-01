@@ -108,3 +108,14 @@ limits:
   video_rpm: 4
   max_batch_items: 10
   daily_video_cap: 40
+
+autopause:                     # metaads.autopause, every 2 hours (scripts/install_timer.sh): pauses losing ACTIVE ad sets
+  result_action_type: start_trial_total   # Ads Manager's "Results" for a START_TRIAL ad set, read from metric_field
+  metric_field: conversions
+  zero_results_max_spend: 150  # no results at all: pause once lifetime spend passes this (Rs)
+  cpr_bands:                   # [results at least, pause when cost per result is above]; the highest matching band applies
+    - [20, 120]
+    - [10, 130]
+    - [6, 200]
+    - [3, 225]
+    - [1, 250]

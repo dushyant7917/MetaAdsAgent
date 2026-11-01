@@ -138,8 +138,8 @@ def _batch_result(item: dict[str, Any] | None) -> BatchResult:
         body = json.loads(item.get("body") or "{}")
     except ValueError:
         body = {}
-    if item.get("code") == 200 and body.get("id"):
-        return BatchResult(True, id=str(body["id"]))
+    if item.get("code") == 200 and (body.get("id") or body.get("success")):      # an update answers {"success": true}
+        return BatchResult(True, id=str(body["id"]) if body.get("id") else None)
     err = body.get("error") if isinstance(body, dict) else None
     if isinstance(err, dict):
         return BatchResult(False, error=f"{err.get('error_user_msg') or err.get('message')} (code {err.get('code')})")
