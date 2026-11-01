@@ -18,17 +18,27 @@ hermes -p "$PROFILE" config set model.provider gemini
 hermes -p "$PROFILE" config set model.default "$GEMINI_MODEL"
 hermes -p "$PROFILE" config set model.base_url https://generativelanguage.googleapis.com/v1beta
 
-# Role and skill from the repo.
+# Role and skills from the repo: every folder in hermes/skills/ becomes a skill of the profile.
 install -m 600 "$REPO/hermes/SOUL.md" "$PROFILE_HOME/SOUL.md"
-mkdir -p "$PROFILE_HOME/skills/ad-hook-creator"
-install -m 644 "$REPO/hermes/skills/ad-hook-creator/SKILL.md" "$PROFILE_HOME/skills/ad-hook-creator/SKILL.md"
+for dir in "$REPO"/hermes/skills/*/; do
+  name="$(basename "$dir")"
+  mkdir -p "$PROFILE_HOME/skills/$name"
+  install -m 644 "$dir/SKILL.md" "$PROFILE_HOME/skills/$name/SKILL.md"
+done
+# Skills this repo used to ship under other names: remove them, or the bot would see both.
+rm -rf "$PROFILE_HOME/skills/ad-hook-creator" "$PROFILE_HOME/skills/meta-ads"
 
-# The adhook MCP server (runs from this repo with uv; reads its keys from the profile .env).
-if ! grep -q '^  adhook:' "$PROFILE_HOME/config.yaml" 2>/dev/null; then
+# Leftovers from before the rename adhook -> metaads: drop the old MCP entry and skill, or the bot would load both.
+if grep -q '^  adhook:' "$PROFILE_HOME/config.yaml" 2>/dev/null; then
+  hermes -p "$PROFILE" mcp remove adhook || true
+fi
+
+# The metaads MCP server (runs from this repo with uv; reads its keys from the profile .env).
+if ! grep -q '^  metaads:' "$PROFILE_HOME/config.yaml" 2>/dev/null; then
   # 'mcp add' asks "Enable all tools? [Y/n/select]"; answer Y so this also works without a terminal.
-  printf 'Y\n' | hermes -p "$PROFILE" mcp add adhook --command "$UV" \
-    --env "ADHOOK_ENV_FILE=$REPO/.env" \
-    --args run --project "$REPO" python -m adhook.server
+  printf 'Y\n' | hermes -p "$PROFILE" mcp add metaads --command "$UV" \
+    --env "METAADS_ENV_FILE=$REPO/.env" \
+    --args run --project "$REPO" python -m metaads.server
 fi
 
 # Keys: $REPO/.env (gitignored) is the one place you edit. Hermes itself reads Gemini and Telegram
