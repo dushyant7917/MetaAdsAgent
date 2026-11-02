@@ -1,6 +1,7 @@
 """SQLite store for batches, per-ad jobs and video-generation usage (for the daily cap)."""
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 import uuid
@@ -9,17 +10,23 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .config import load_settings
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS batches (
   id TEXT PRIMARY KEY, created REAL, chat_id TEXT
 );
 CREATE TABLE IF NOT EXISTS jobs (
-  id TEXT PRIMARY KEY, batch_id TEXT, idx INTEGER, language TEXT, text TEXT, body TEXT, duration INTEGER,
-  status TEXT, stage TEXT, error TEXT, hook_path TEXT, ad_path TEXT, attempts INTEGER DEFAULT 0,
-  created REAL, updated REAL, estimate TEXT, owner TEXT, redo_of TEXT, plan_hint TEXT, review TEXT, reviewed REAL
+  id TEXT PRIMARY KEY, batch_id TEXT, idx INTEGER, language TEXT, spoken_text TEXT, thumbnail_text TEXT, body TEXT,
+  duration INTEGER, status TEXT, stage TEXT, error TEXT, hook_path TEXT, ad_path TEXT, attempts INTEGER DEFAULT 0,
+  created REAL, updated REAL, estimate TEXT, owner TEXT, redo_of TEXT, plan_hint TEXT, review TEXT, reviewed REAL,
+  ad_format TEXT DEFAULT 'video', fallback_reason TEXT
 );
 CREATE TABLE IF NOT EXISTS redo_plans (
   id TEXT PRIMARY KEY, job_id TEXT, args TEXT, status TEXT, created REAL
+);
+CREATE TABLE IF NOT EXISTS ad_plans (
+  id TEXT PRIMARY KEY, created REAL, launch_day TEXT, status TEXT, items TEXT, summary TEXT
 );
 CREATE TABLE IF NOT EXISTS video_calls (ts REAL);
 CREATE TABLE IF NOT EXISTS meta_uploads (
@@ -35,8 +42,13 @@ CREATE INDEX IF NOT EXISTS budget_increases_adset ON budget_increases (adset_id,
 META_FIELDS = {"upload_id", "status", "stage", "error", "video_id", "image_hash", "adset_id", "ad_id"}
 # What the owner decided about a finished ad: None = not part of the review loop, else one of REVIEW_STATES.
 REVIEW_PENDING, REVIEW_APPROVED, REVIEW_DROPPED, REVIEW_REDONE = "pending", "approved", "dropped", "redone"
+# The daily ad plan the owner is asked to approve before any ad is made.
+PLAN_PENDING, PLAN_APPROVED, PLAN_REJECTED, PLAN_SUPERSEDED = "pending", "approved", "rejected", "superseded"
 REVIEW_STATES = {REVIEW_PENDING, REVIEW_APPROVED, REVIEW_DROPPED, REVIEW_REDONE}
-JOB_FIELDS = {"status", "stage", "error", "hook_path", "ad_path", "attempts", "duration", "body", "estimate", "owner"}
+JOB_FIELDS = {"status", "stage", "error", "hook_path", "ad_path", "attempts", "duration", "body", "estimate", "owner",
+              "ad_format", "fallback_reason"}
+# What kind of file an ad is: a hook + body video, or a single 4:5 image.
+FORMAT_VIDEO, FORMAT_IMAGE = "video", "image"
 
 
 class JobStore:
@@ -47,13 +59,19 @@ class JobStore:
             c.execute("PRAGMA journal_mode=WAL")
             c.executescript(SCHEMA)
             have = {r["name"] for r in c.execute("PRAGMA table_info(jobs)")}
+            if "text" in have:                                       # database from before the two texts were split
+                c.execute("ALTER TABLE jobs RENAME COLUMN text TO spoken_text")
+                have = (have - {"text"}) | {"spoken_text"}
             for col, kind in (("estimate", "TEXT"), ("owner", "TEXT"), ("redo_of", "TEXT"), ("plan_hint", "TEXT"),
-                              ("review", "TEXT"), ("reviewed", "REAL")):
+                              ("review", "TEXT"), ("reviewed", "REAL"), ("thumbnail_text", "TEXT"),
+                              ("ad_format", "TEXT DEFAULT 'video'"), ("fallback_reason", "TEXT")):
                 if col not in have:
                     c.execute(f"ALTER TABLE jobs ADD COLUMN {col} {kind}")    # database created before this column
+            c.execute("UPDATE jobs SET thumbnail_text = spoken_text WHERE thumbnail_text IS NULL")
+            c.commit()
 
     def _conn(self) -> sqlite3.Connection:
-        c = sqlite3.connect(self.path, timeout=30)
+        c = sqlite3.connect(self.path, timeout=load_settings().timeouts.database)
         c.row_factory = sqlite3.Row
         return c
 
@@ -67,11 +85,13 @@ class JobStore:
             for idx, it in enumerate(items):
                 job_id = f"{batch_id}-{idx + 1}"
                 job_ids.append(job_id)
-                c.execute("INSERT INTO jobs (id,batch_id,idx,language,text,body,duration,status,stage,created,updated,"
-                          "estimate,owner,redo_of,plan_hint,review) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                          (job_id, batch_id, idx, it["language"], it["text"], it.get("body"), it.get("duration"),
-                           "queued", "queued", now, now, it.get("estimate"), owner, it.get("redo_of"),
-                           it.get("plan_hint"), it.get("review")))
+                c.execute("INSERT INTO jobs (id,batch_id,idx,language,spoken_text,thumbnail_text,body,duration,status,"
+                          "stage,created,updated,estimate,owner,redo_of,plan_hint,review,ad_format) "
+                          "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                          (job_id, batch_id, idx, it["language"], it["spoken_text"], it["thumbnail_text"], it.get("body"),
+                           it.get("duration"), "queued", "queued", now, now, it.get("estimate"), owner,
+                           it.get("redo_of"), it.get("plan_hint"), it.get("review"),
+                           it.get("ad_format", FORMAT_VIDEO)))
         return batch_id, job_ids
 
     def update_job(self, job_id: str, **fields: Any) -> None:
@@ -102,7 +122,7 @@ class JobStore:
             raise KeyError(batch_id)
         return [dict(r) for r in rows]
 
-    def recent_jobs(self, limit: int = 10) -> list[dict[str, Any]]:
+    def recent_jobs(self, limit: int) -> list[dict[str, Any]]:
         with closing(self._conn()) as c:
             rows = c.execute("SELECT * FROM jobs ORDER BY created DESC, idx LIMIT ?", (limit,)).fetchall()
         return [dict(r) for r in rows]
@@ -200,17 +220,72 @@ class JobStore:
             rows = c.execute("SELECT * FROM meta_uploads WHERE upload_id=? ORDER BY job_id", (upload_id,)).fetchall()
         return [dict(r) for r in rows]
 
+    # ---- daily ad plans: proposed first, ads are made only after the owner approves
+    def create_ad_plan(self, plan_id: str, launch_day: str, items: list[dict], summary: dict) -> None:
+        """Store a new pending plan; every older pending plan is superseded (only the newest can be approved)."""
+        with closing(self._conn()) as c, c:
+            c.execute("UPDATE ad_plans SET status=? WHERE status=?", (PLAN_SUPERSEDED, PLAN_PENDING))
+            c.execute("INSERT INTO ad_plans VALUES (?,?,?,?,?,?)",
+                      (plan_id, time.time(), launch_day, PLAN_PENDING, json.dumps(items, ensure_ascii=False),
+                       json.dumps(summary, ensure_ascii=False)))
+
+    def supersede_pending_ad_plans(self) -> None:
+        with closing(self._conn()) as c, c:
+            c.execute("UPDATE ad_plans SET status=? WHERE status=?", (PLAN_SUPERSEDED, PLAN_PENDING))
+
+    @staticmethod
+    def _ad_plan(row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        return {**dict(row), "items": json.loads(row["items"]), "summary": json.loads(row["summary"])}
+
+    def get_ad_plan(self, plan_id: str) -> dict[str, Any] | None:
+        with closing(self._conn()) as c:
+            return self._ad_plan(c.execute("SELECT * FROM ad_plans WHERE id=?", (plan_id,)).fetchone())
+
+    def latest_ad_plan(self, status: str | None = None) -> dict[str, Any] | None:
+        with closing(self._conn()) as c:
+            row = (c.execute("SELECT * FROM ad_plans WHERE status=? ORDER BY created DESC LIMIT 1", (status,))
+                   if status else c.execute("SELECT * FROM ad_plans ORDER BY created DESC LIMIT 1")).fetchone()
+        return self._ad_plan(row)
+
+    def update_ad_plan_items(self, plan_id: str, items: list[dict]) -> None:
+        with closing(self._conn()) as c, c:
+            c.execute("UPDATE ad_plans SET items=? WHERE id=?", (json.dumps(items, ensure_ascii=False), plan_id))
+
+    def set_ad_plan_status(self, plan_id: str, old: str, new: str) -> bool:
+        """Atomic: False when the plan was not in state `old` (someone else got there first)."""
+        with closing(self._conn()) as c, c:
+            return c.execute("UPDATE ad_plans SET status=? WHERE id=? AND status=?", (new, plan_id, old)).rowcount == 1
+
+    # ---- hook texts already used, so new hooks are not repeats and the writer sees the recent ones
+    def known_hooks(self, language: str | None = None, limit: int | None = None) -> list[dict[str, str]]:
+        """(spoken_text, thumbnail_text) of ads that did not fail, newest first; one language or all."""
+        sql = "SELECT DISTINCT language, spoken_text, thumbnail_text FROM jobs WHERE status != 'failed'"
+        args: list[Any] = []
+        if language:
+            sql += " AND language = ?"
+            args.append(language)
+        sql += " ORDER BY created DESC" + (" LIMIT ?" if limit else "")
+        if limit:
+            args.append(limit)
+        with closing(self._conn()) as c:
+            return [dict(r) for r in c.execute(sql, args).fetchall()]
+
     # ---- what the planner needs to tell winning hooks from fresh ones
     def uploaded_jobs(self) -> list[dict[str, Any]]:
-        """Jobs that have an ad set on Meta: job id, language code, hook text, body (None = default), made-at time
-        and ad set id."""
+        """Jobs that have an ad set on Meta: job id, language code, both hook texts, body (None = default), format,
+        made-at time and ad set id."""
         with closing(self._conn()) as c:
-            rows = c.execute("SELECT j.id AS job_id, j.language, j.text, j.body, j.created, u.adset_id FROM jobs j "
+            rows = c.execute("SELECT j.id AS job_id, j.language, j.spoken_text, j.thumbnail_text, j.body, j.ad_format, "
+                             "j.created, u.adset_id FROM jobs j "
                              "JOIN meta_uploads u ON u.job_id = j.id WHERE u.adset_id IS NOT NULL").fetchall()
         return [dict(r) for r in rows]
 
-    def hook_body_pairs(self) -> set[tuple[str, str, str | None]]:
-        """(language code, hook text, body) of every ad ever made that did not fail: pairs not to repeat."""
+    def hook_body_pairs(self) -> set[tuple[str, str, str, str | None]]:
+        """(language code, spoken text, thumbnail text, body) of every video ad ever made that did not fail: pairs not
+        to repeat. Image ads are left out: no body video was ever made with their hook."""
         with closing(self._conn()) as c:
-            rows = c.execute("SELECT language, text, body FROM jobs WHERE status != 'failed'").fetchall()
-        return {(r["language"], r["text"], r["body"]) for r in rows}
+            rows = c.execute("SELECT language, spoken_text, thumbnail_text, body FROM jobs "
+                             "WHERE status != 'failed' AND ad_format = ?", (FORMAT_VIDEO,)).fetchall()
+        return {(r["language"], r["spoken_text"], r["thumbnail_text"], r["body"]) for r in rows}

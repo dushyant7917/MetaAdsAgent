@@ -21,12 +21,25 @@ languages:            # code -> name used in the video prompt
   ta: Tamil
   te: Telugu
 
+language_scripts:     # code -> Unicode script name (as in unicodedata.name) a hook text of that language is written in
+  hi: DEVANAGARI
+  bn: BENGALI
+  gu: GUJARATI
+  kn: KANNADA
+  mr: DEVANAGARI
+  ta: TAMIL
+  te: TELUGU
+
+schedules:                     # when the recurring jobs run: the installers (scripts/install_*) and the planner's forecast both read these
+  autopause_every_hours: 2     # metaads.autopause; must divide 24, it runs on those hours of the server clock (UTC)
+  budget_increase_hour_ist: 5  # metaads.budget, once a day at this hour IST
+  daily_plan_ist: "12:00"      # the Hermes cron job that plans the next launch's ads (HH:MM IST)
+
 default_body: navy-darkyellow-yellowbox
 
 models:
   image: gpt-image-2
   image_quality: high
-  image_size: 1024x1536        # closest 2:3 portrait; fitted into 9:16 with black bars (top/bottom), never cropped
   video: veo-3.1-lite-generate-001   # cheapest Veo; PREVIEW on Vertex, no support guarantee. GA: veo-3.1-fast-generate-001
   video_resolution: 720p
   # Model used by the poster-window planner (verified against the key). If it ever stops working the planner
@@ -36,12 +49,27 @@ models:
   whisper_compute_type: int8
   whisper_cpu_threads: 2
 
+images:                        # gpt-image output: `size` is asked from the API, then fitted into width x height with black bars (never cropped)
+  reporter:                    # the thumbnail the hook video is made from
+    aspect: "9:16"
+    size: 1024x1536            # closest 2:3 portrait; fitted into 9:16 with black bars (top/bottom)
+    width: 720
+    height: 1280
+  image_ad:                    # the single-image ad (made when the hook video fails, or when an image ad is asked for)
+    aspect: "4:5"
+    size: 1024x1280            # exactly 4:5 if gpt-image-2 accepts it (see step 0 of the image-ad work), else a supported size padded to 4:5
+    width: 1024
+    height: 1280
+
 generation:                    # Veo on Google Cloud (Vertex AI): the gpt-image thumbnail -> image-to-video
   # Project, region and credentials come from the environment (.env): GOOGLE_CLOUD_PROJECT,
   # GOOGLE_CLOUD_LOCATION (default us-central1) and GOOGLE_APPLICATION_CREDENTIALS (service-account JSON path).
-  prompt: 'The reporter in image speaks "{text}" in {language}'
+  prompt: 'The reporter in image speaks "{spoken_text}" in {language}'
   poll_seconds: 10
   timeout_seconds: 900
+  max_retries: 4               # extra attempts when Vertex answers 429 (rate limited)
+  backoff_seconds: 15          # wait before the first retry; doubles each time
+  backoff_max_seconds: 120
 
 video:
   width: 1080
@@ -57,9 +85,13 @@ hook:
   durations: [4, 6, 8]         # Veo clip lengths allowed
   lead_tail_seconds: 0.5       # silence allowance added to the estimated speech time
   duration_retries: 3          # extra attempts of the Gemini speaking-time call (texts without an answer are re-asked)
+  speech_seconds_range: [0.2, 120]   # a speaking-time estimate outside this is nonsense and is asked again
+  duration_backoff_max_seconds: 8    # the wait before asking again doubles from 1 s up to this
 
 poster:
   min_seconds: 1.5             # shortest time the poster stays on screen
+  fallback_start_share: 0.4    # when no poster moment can be found, it starts this far into the clip
+  fallback_seconds: 2.0        # ... and stays this long (at least min_seconds)
   pad_before: 0.05
   pad_after: 0.10
   min_speed: 0.5
@@ -74,6 +106,13 @@ timeouts:                      # seconds; a call that hangs fails (the job retri
   llm_request: 120             # one Gemini text request (speaking time, poster planner)
   vertex_request: 120          # one Vertex call (start, poll, download); the whole Veo wait is generation.timeout_seconds
   ffmpeg: 900                  # one ffmpeg / ffprobe run (Whisper is local and has no timeout)
+  meta_read: 120               # one Meta Graph request that reads (ad sets, insights, status)
+  meta_upload: 300             # one Meta Graph request that uploads a video or image
+  telegram_text: 30
+  telegram_photo: 120
+  telegram_video: 300
+  database: 30                 # waiting for the SQLite lock
+  heartbeat: 10                # one healthchecks.io ping
 
 watchdog:
   check_seconds: 60            # how often it looks for jobs left behind by a dead server and for stuck jobs
@@ -91,6 +130,11 @@ meta:                          # upload to Meta (Marketing API). Secrets and IDs
   genders: [1]
   video_ready_timeout: 900     # seconds to wait for Meta to finish processing the uploaded videos
   video_poll_seconds: 5
+  attribution_click_days: 7    # a conversion counts for an ad set up to this many days after the click (Meta allows 1 or 7); no view-through. Set on every new ad set AND used when reading results, so the rules see what Meta attributes
+  start_hour_ist: 6            # new ad sets start at the next time it is this hour in IST, unless the owner names a time
+  max_attempts: 3              # a Graph call that is rate limited is tried this often
+  backoff_seconds: 30          # wait after the first rate limit, times the attempt number
+  ad_name_preview_chars: 40    # how much of the dialogue goes into an ad's name in Ads Manager
   regions_cache: data/meta_regions.json   # state -> Meta region key, looked up once per state ever
   language_states:             # geo-target each language's ads to its states instead of all of India
     hi: [Himachal Pradesh, Uttarakhand, Haryana, Delhi, Uttar Pradesh, Bihar, Jharkhand, Rajasthan, Madhya Pradesh, Chhattisgarh]
@@ -106,10 +150,14 @@ limits:
   max_meta_upload: 10          # ads per upload_ads request
   image_rpm: 140
   video_rpm: 4
-  max_batch_items: 10
+  job_attempts: 2              # a failing ad is tried this often; stages already done are not repeated (after the last try a failed video becomes an image ad)
+  heartbeat_attempts: 2        # one healthchecks.io ping is tried this often
+  list_ads_default: 10
+  list_ads_max: 30
+  max_batch_items: 40
   daily_video_cap: 40
 
-autopause:                     # metaads.autopause, every 2 hours (scripts/install_autopause_timer.sh): pauses losing ACTIVE ad sets
+autopause:                     # metaads.autopause, runs as set in schedules (scripts/install_autopause_timer.sh): pauses losing ACTIVE ad sets
   result_action_type: start_trial_total   # Ads Manager's "Results" for a START_TRIAL ad set, read from metric_field
   metric_field: conversions
   zero_results_max_spend: 150  # no results at all: pause once lifetime spend passes this (Rs)
@@ -120,7 +168,7 @@ autopause:                     # metaads.autopause, every 2 hours (scripts/insta
     - [3, 225]
     - [1, 250]
 
-budget_increase:               # metaads.budget, daily at 5:00 AM IST (scripts/install_budget_increase_timer.sh): raises ACTIVE ad set budgets
+budget_increase:               # metaads.budget, runs as set in schedules (scripts/install_budget_increase_timer.sh): raises ACTIVE ad set budgets
   increase_pct: 20
   min_hours_between: 70        # hours since this tool's last increase of the ad set before it may be raised again
   min_results_first_increase: 50   # an ad set never raised before needs this many results (learning phase over)
@@ -137,7 +185,23 @@ ad_planning:                   # metaads.planning: how many new ads the rest of 
   retire_hook_after_failures: 3 # a winning hook stops being reused once its newest this-many decided ad sets in a row were paused before performing_min_results; a later win resets it
   tie_break_order: [hi, te, kn, mr, gu, bn]   # language codes: who gets the extra ads when languages tie (all weigh the same); unlisted ones come last
   exploit_share: 0.6           # share of new ads that put a proven hook on another body; the rest are new hooks
+  min_format_share: 0.10       # new hooks come as video or image ads by their win rates, but each format gets at least this share, so the weaker one keeps being tried
+  hook_history_limit: 5        # winning and failing hooks per list that get_hook_performance returns
+  gloss_language: hi           # the language the owner reads: hooks in other languages are shown with a translation into it
+  gloss_label: "हिंदी"          # the word that introduces that translation in the plan message: (हिंदी: ...)
+  proposal_retries: 3          # how often Hermes may fix its hooks after propose_ad_plan refuses them
+  memory_note_lines: 8         # lines of the "Ad performance notes" entry Hermes keeps in its memory
+  min_native_words: 2          # a hook text must have at least this many words in its language's own script (English words in Latin letters are fine)
+  recent_hooks_limit: 15       # hook texts per language that get_hook_brief shows the writer, so new ones are not repeats
   prior_win_rate: 0.15         # chance a new ad becomes a winner, until enough ad sets have a decided outcome
   prior_weight: 10             # how many decided ad sets that prior counts as
   default_loser_spend_inr: 200 # spend before a losing ad set is paused, until some have been paused
   winner_horizon_days: 7       # days at the full daily budget counted as the cost of a winner
+
+messages:                      # how much of a text goes into a Telegram message or a tool answer
+  spoken_chars: 120            # the dialogue in an ad's caption
+  thumbnail_chars: 80          # the thumbnail words in an ad's caption
+  reason_chars: 150            # why a video failed
+  tool_text_chars: 100         # a text in the answer of list_ads
+  ad_label_chars: 80           # an ad's name in a redo plan
+  hook_label_chars: 30         # a hook's name in a plan error

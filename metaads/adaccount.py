@@ -8,10 +8,21 @@ import json
 from typing import Iterator, Mapping
 
 from .config import Settings, require_env
-from .meta import GraphClient
+from .meta import GraphClient, attribution_window
 
 PAGE_SIZE = "100"
-CLIENT_TIMEOUT = 120                 # seconds; the job and planner reads can be large
+
+
+def insights_field(settings: Settings, metrics: str) -> str:
+    """The `insights` field of an ad set read: lifetime `metrics`, conversions counted in the click window that new ad
+    sets are attributed with (settings.meta.attribution_click_days). With one window requested Meta's `value` of a
+    conversion is the count in exactly that window, which is what sum_action reads."""
+    return f"insights.date_preset(maximum).action_attribution_windows([\"{attribution_window(settings.meta)}\"]){{{metrics}}}"
+
+
+def attribution_windows_param(settings: Settings) -> str:
+    """The `action_attribution_windows` parameter of an /insights request, the same window as insights_field."""
+    return json.dumps([attribution_window(settings.meta)])
 
 
 def sum_action(actions: list[dict] | None, action_type: str) -> int:
@@ -52,7 +63,7 @@ def managed_account(settings: Settings, environ: Mapping[str, str]) -> tuple[str
 
 
 def make_client(settings: Settings) -> GraphClient:
-    return GraphClient(require_env("META_ACCESS_TOKEN"), settings.meta.api_version, timeout=CLIENT_TIMEOUT)
+    return GraphClient.from_settings(require_env("META_ACCESS_TOKEN"), settings)
 
 
 def get_all(client: GraphClient, path: str, **params: str) -> list[dict]:

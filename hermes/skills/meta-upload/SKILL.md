@@ -9,10 +9,13 @@ Only for ads the owner approved in the `ad-review` loop, or when the owner asks 
 Tamil one on Meta"). It creates ACTIVE ad sets that start spending, so never do it on your own after creating ads.
 `upload_ads` marks the ads approved, so they stop waiting for review.
 
+Video ads upload as a video, image ads (a single 4:5 picture) as an image ad; `upload_ads` handles both the same way.
+Meta ad text and headline are the ad's `spoken_text`.
+
 1. Find the ads: the batch the owner replied to or named (`batch_id`), or specific ads via `list_ads` (`job_ids`).
    Every ad's caption ends with `id <job_id>`: when the owner replies to an ad, use that id as the `job_id`.
    `list_ads` shows `meta_status` / `meta_ad_id`: ads already on Meta are skipped automatically.
-2. Call `upload_ads(batch_id=...)` or `upload_ads(job_ids=[...])`. Ad sets start at the next 6:00 IST by default; pass `start_time` (e.g. `2026-11-03T09:00`, IST) only when
+2. Call `upload_ads(batch_id=...)` or `upload_ads(job_ids=[...])`. Ad sets start at the next {{meta.start_hour_ist}}:00 IST by default; pass `start_time` (e.g. `2026-11-03T09:00`, IST) only when
    the owner names a start time. Add `dry_run=true` only if the owner wants to
    see what would be sent first.
 3. If it returns `started: true`: one short line ("Uploading 3 ads to Meta"). The result arrives in the chat by
@@ -24,7 +27,7 @@ Tamil one on Meta"). It creates ACTIVE ad sets that start spending, so never do 
 ## Automatic changes after upload (not done by you)
 Two timers outside Hermes change ad sets on their own by fixed rules, and report on Telegram when they act. Do not
 repeat or undo their work; if the owner asks, only explain it:
-- Auto-pause, every 2 hours: pauses an ACTIVE ad set with no results once it has spent too much, or whose cost per
+- Auto-pause, every {{schedules.autopause_every_hours}} hours: pauses an ACTIVE ad set with no results once it has spent too much, or whose cost per
   result is above the limit for its number of results.
-- Budget increase, daily at 5:00 IST: raises an ACTIVE ad set's daily budget by 20% when 70 hours have passed since
-  its last increase, or, if never raised, once it has 50 results. It never goes above the configured maximum.
+- Budget increase, daily at {{schedules.budget_increase_hour_ist}}:00 IST: raises an ACTIVE ad set's daily budget by {{budget_increase.increase_pct}}% when {{budget_increase.min_hours_between}} hours have passed since
+  its last increase, or, if never raised, once it has {{budget_increase.min_results_first_increase}} results. It never goes above the configured maximum.

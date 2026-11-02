@@ -97,7 +97,7 @@ def store(tmp_path):
 
 def go(fake, store, apply, env=ENV, now=NOW):
     notes = Notes()
-    client = lambda: GraphClient("tok", "v25.0", transport=httpx.MockTransport(fake), sleep=lambda x: None, backoff=0)
+    client = lambda: GraphClient.from_settings("tok", load_settings(), transport=httpx.MockTransport(fake), sleep=lambda x: None, backoff=0)
     return run_job(S, client, notes, env, store, apply, "https://hc-ping.com/x", clock=lambda: now), notes
 
 
@@ -116,10 +116,14 @@ def test_one_read_and_one_batch_raise_only_the_due_ones(pings, store):
     assert fake.reads[0]["path"].endswith("/act_111/adsets")
     assert json.loads(fake.reads[0]["filtering"]) == [{"field": "effective_status", "operator": "IN", "value": ["ACTIVE"]}]
     assert "daily_budget" in fake.reads[0]["fields"] and "date_preset(maximum)" in fake.reads[0]["fields"]
+    assert 'action_attribution_windows(["7d_click"])' in fake.reads[0]["fields"]            # the same click window as the ad sets
     assert [(op["relative_url"], op["body"]) for op in fake.batches[0]] == [("1", "daily_budget=60000"),
                                                                             ("3", "daily_budget=72000")]
     assert pings == ["/start", ""]
-    assert "RAISED: Hindi | as 1 | Rs 500.00 -> Rs 600.00" in notes.texts[0] and "2 of 6" in notes.texts[0]
+    text = notes.texts[0]
+    assert text.startswith("📈 Budget increase: 2 ad sets raised\n\n1. Hindi · as 1\n   Daily budget: Rs 500.00 → Rs 600.00\n"
+                           "   Why: 50 results and never raised before")
+    assert "\n\n2. " in text and "hours since its last raise" in text and "as 2" not in text.split("\n\n2. ")[0]
     last = store.last_budget_increases()
     assert last["1"] == NOW and last["3"] == NOW and last["4"] == ago(10) and "2" not in last
 
@@ -145,7 +149,7 @@ def test_dry_run_reads_once_and_never_writes_or_records(pings, store):
     fake = FakeMeta([[row("1", "c-hi", 50000, 80)]])
     code, notes = go(fake, store, apply=False)
     assert code == 0 and len(fake.reads) == 1 and fake.batches == [] and store.last_budget_increases() == {}
-    assert "DRY RUN" in notes.texts[0] and "would raise: Hindi | as 1" in notes.texts[0]
+    assert "DRY RUN: 1 ad set would be raised" in notes.texts[0] and "1. Hindi · as 1" in notes.texts[0]
 
 
 def test_nothing_due_means_no_write_and_no_telegram(pings, store):
@@ -172,14 +176,15 @@ def test_failed_raise_is_reported_not_recorded_and_fails_the_run(pings, store):
     fake = FakeMeta([[row("1", "c-hi", 50000, 80), row("2", "c-hi", 50000, 80)]], fail=["1"])
     code, notes = go(fake, store, apply=True)
     assert code == 1 and pings == ["/start", "/fail"]
-    assert "RAISED: Hindi | as 2" in notes.texts[0] and "NOT raised: Hindi | as 1" in notes.texts[0]
-    assert "could not raise as 1" in notes.texts[0]
+    assert "Budget increase: 1 ad set raised" in notes.texts[0] and "1. Hindi · as 2" in notes.texts[0]
+    assert "Hindi · as 1" not in notes.texts[0]                                                      # not raised: not listed
+    assert "⚠️ could not raise as 1" in notes.texts[0]
     assert set(store.last_budget_increases()) == {"2"}             # the failed one is retried tomorrow
 
 
 def test_failed_read_alerts_and_fails(pings, store):
     code, notes = go(FakeMeta([[]], fail_read=True), store, apply=True)
-    assert code == 1 and pings == ["/start", "/fail"] and "FAILED" in notes.texts[0] and "token expired" in notes.texts[0]
+    assert code == 1 and pings == ["/start", "/fail"] and "Budget increase failed" in notes.texts[0] and "token expired" in notes.texts[0]
 
 
 def test_no_campaign_ids_fails_instead_of_silently_doing_nothing(pings, store):

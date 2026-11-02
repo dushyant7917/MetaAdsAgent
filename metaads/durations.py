@@ -33,7 +33,7 @@ class DurationEstimateError(RuntimeError):
 
 def build_prompt(items: list[dict]) -> str:
     """One prompt for the given texts (the caller passes one). X, Y, Z only show the output format; no real values are given, to avoid bias."""
-    todo = "\n".join(f'{i}. ({it["language"]}) "{it["text"]}"' for i, it in enumerate(items))
+    todo = "\n".join(f'{i}. ({it["language"]}) "{it["spoken_text"]}"' for i, it in enumerate(items))
     return (
         "TASK\n"
         "Estimate how long each hook text below takes to speak aloud, in seconds.\n\n"
@@ -87,18 +87,19 @@ def _estimate_one(item: dict, ask: LLMFn, s: Settings) -> tuple[dict | None, str
         try:
             for a in ask(build_prompt([item])):
                 secs = float(a["speech_seconds"])
-                if int(a["id"]) == 0 and 0.2 <= secs <= 120:               # reject nonsense values
+                low, high = s.hook.speech_seconds_range
+                if int(a["id"]) == 0 and low <= secs <= high:               # reject nonsense values
                     return {"speech_seconds": round(secs, 2), "attempts": attempt}, last_error
             last_error = "unusable answer"
         except Exception as exc:                                              # network, quota, bad JSON, bad fields
             last_error = f"{type(exc).__name__}: {exc}"
         if attempt <= s.hook.duration_retries:
-            time.sleep(min(2 ** (attempt - 1), 8))
+            time.sleep(min(2 ** (attempt - 1), s.hook.duration_backoff_max_seconds))
     return None, last_error
 
 
 def pick_durations(items: list[dict], settings: Settings | None = None, llm: LLMFn | None = None) -> list[dict]:
-    """items: [{language, text}] -> [{speech_seconds, clip_seconds (longest allowed if the text is longer), attempts}], same order.
+    """items: [{language, spoken_text}] -> [{speech_seconds, clip_seconds (longest allowed if the text is longer), attempts}], same order.
 
     One call per text, run concurrently. A text without a usable answer is asked again (up to
     hook.duration_retries more times); if some still have none, DurationEstimateError is raised.

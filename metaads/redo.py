@@ -20,16 +20,19 @@ from typing import Any
 
 from . import media
 from .durations import DurationEstimateError
-from .jobs import REVIEW_PENDING, REVIEW_REDONE
+from .jobs import FORMAT_IMAGE, FORMAT_VIDEO, REVIEW_PENDING, REVIEW_REDONE
 from .media import PosterWindow
 from .pipeline import Pipeline, ValidationError
 
 STAGES = ["image", "video", "transcribe", "plan", "render_hook", "merge"]
 FILES = {"image": "image.png", "video": "video.mp4", "transcribe": "words.json", "plan": "plan.json",
          "render_hook": "hook.mp4", "merge": "ad.mp4"}
+IMAGE_AD_FILE = "image_ad.png"      # the only stage of an image ad
+IMAGE_AD_CHANGES = {"thumbnail_text", "image", "spoken_text"}   # what can be redone on an image ad and keep it an image ad
 # What the owner wants changed -> the first stage that has to run again.
 CHANGES = {
-    "text": "image",             # new hook text: the image carries the text, so everything is new
+    "thumbnail_text": "image",   # new words on the image: a new image, so a new clip and everything after
+    "spoken_text": "video",      # new dialogue: the image is kept, a new Veo clip is made from it
     "image": "image",            # a new reporter image needs a new Veo clip, so everything after is new too
     "video": "video",            # same image, new Veo clip (new voice and picture)
     "duration": "video",         # a different clip length is a new Veo clip
@@ -58,8 +61,9 @@ class RedoPlanner:
         work = self._work(job_id)
         have = {stage: (work / name).exists() for stage, name in FILES.items()}
         out: dict[str, Any] = {
-            "job_id": job_id, "ad_number_in_batch": job["idx"] + 1, "language": job["language"], "text": job["text"],
-            "body": job["body"], "clip_seconds_requested": job["duration"], "status": job["status"],
+            "job_id": job_id, "ad_number_in_batch": job["idx"] + 1, "language": job["language"],
+            "spoken_text": job["spoken_text"], "thumbnail_text": job["thumbnail_text"], "ad_format": job["ad_format"],
+            "fallback_reason": job["fallback_reason"], "body": job["body"], "clip_seconds_requested": job["duration"], "status": job["status"],
             "stage": job["stage"], "ad_path": job["ad_path"], "hook_path": job["hook_path"], "redo_of": job["redo_of"],
             "stored_stages": [s for s in STAGES if have[s]],
         }
@@ -81,8 +85,9 @@ class RedoPlanner:
         return out
 
     # ---------- propose ----------
-    def plan(self, job_id: str, changes: list[str], new_text: str | None = None, new_body: str | None = None,
-             duration: int | None = None, poster_start: float | None = None, poster_end: float | None = None,
+    def plan(self, job_id: str, changes: list[str], new_spoken_text: str | None = None,
+             new_thumbnail_text: str | None = None, new_body: str | None = None, duration: int | None = None,
+             poster_start: float | None = None, poster_end: float | None = None,
              poster_feedback: str | None = None) -> dict[str, Any]:
         """Work out the redo. Changes nothing and costs nothing; the owner must approve the result."""
         job = self._job(job_id)
@@ -90,7 +95,8 @@ class RedoPlanner:
             raise ValidationError(f"Ad {job_id} is not finished (status {job['status']}), so it cannot be redone yet.")
         changes = list(dict.fromkeys(changes))
         # An explicit value implies its change.
-        for arg, change in ((new_text, "text"), (new_body, "body"), (duration, "duration"),
+        for arg, change in ((new_spoken_text, "spoken_text"), (new_thumbnail_text, "thumbnail_text"),
+                            (new_body, "body"), (duration, "duration"),
                             (poster_start, "poster_timing"), (poster_feedback, "poster_timing")):
             if arg is not None and change not in changes:
                 changes.append(change)
@@ -99,7 +105,8 @@ class RedoPlanner:
         bad = [c for c in changes if c not in CHANGES]
         if bad:
             raise ValidationError(f"Unknown change {bad}. Allowed: {', '.join(CHANGES)}")
-        for needed, change in ((new_text, "text"), (new_body, "body"), (duration, "duration")):
+        for needed, change in ((new_spoken_text, "spoken_text"), (new_thumbnail_text, "thumbnail_text"),
+                               (new_body, "body"), (duration, "duration")):
             if change in changes and needed is None:
                 raise ValidationError(f"The '{change}' change needs its new value.")
         if (poster_start is None) != (poster_end is None):
@@ -108,12 +115,18 @@ class RedoPlanner:
             raise ValidationError("poster_start must be 0 or more and before poster_end.")
         if poster_start is not None and poster_feedback:
             raise ValidationError("Give either an exact poster window or feedback for the planner, not both.")
-        checked = self.p.validate_item({"language": job["language"], "text": new_text or job["text"],
+        asked_image_ad = job["ad_format"] == FORMAT_IMAGE and not job["fallback_reason"]
+        if asked_image_ad and set(changes) <= IMAGE_AD_CHANGES:
+            return self._plan_image_ad(job, changes, new_spoken_text, new_thumbnail_text)
+        checked = self.p.validate_item({"language": job["language"], "spoken_text": new_spoken_text or job["spoken_text"],
+                                        "thumbnail_text": new_thumbnail_text or job["thumbnail_text"],
                                         "body": new_body or job["body"], "duration": duration})
 
         work = self._work(job_id)
         start = min(STAGES.index(CHANGES[c]) for c in changes)
         notes: list[str] = []
+        if asked_image_ad:
+            notes.append("This was an image ad; the redo makes a video ad from the same hook.")
         for i in range(start):                                   # a stage to reuse must still be on disk
             if not (work / FILES[STAGES[i]]).exists():
                 notes.append(f"The old {STAGES[i]} file is no longer stored, so the redo starts from there.")
@@ -131,26 +144,61 @@ class RedoPlanner:
         old_plan = json.loads((work / "plan.json").read_text()) if (work / "plan.json").exists() else None
         old_body = job["body"]
         redo, reuse = [], []
-        text_changed = "text" in changes and checked["text"] != job["text"]
-        if text_changed and duration is None:
-            redo.append({"step": "duration", "what": "Estimate the speaking time of the new text (1 Gemini call)"})
+        spoken_changed = "spoken_text" in changes and checked["spoken_text"] != job["spoken_text"]
+        thumbnail_changed = "thumbnail_text" in changes and checked["thumbnail_text"] != job["thumbnail_text"]
+        needs_estimate = (spoken_changed or job["duration"] is None) and duration is None   # an image ad has no clip length yet
+        if needs_estimate:
+            redo.append({"step": "duration", "what": "Estimate the speaking time of the dialogue (1 Gemini call)"})
         for stage in redo_stages:
             redo.append({"step": stage, "what": self._redo_text(stage, manual, poster_start, poster_end, duration)})
         for stage in STAGES[:start]:
             reuse.append({"step": stage, "what": self._reuse_text(stage, old_plan, job["duration"])})
-        if start <= STAGES.index("video") and not text_changed and duration is None:   # an input of the new Veo clip
+        if start <= STAGES.index("video") and not needs_estimate and duration is None:   # an input of the new Veo clip
             reuse.append({"step": "duration", "what": f"The clip length ({job['duration']} s) and its speaking-time estimate"})
         if "body" not in changes:
             reuse.append({"step": "body", "what": f"The body video ({old_body})"})
 
         plan_id = "r" + uuid.uuid4().hex[:6]
-        args = {"job_id": job_id, "changes": changes, "start": start, "new_text": checked["text"] if text_changed else None,
+        args = {"job_id": job_id, "changes": changes, "start": start, "format": FORMAT_VIDEO,
+                "new_spoken_text": checked["spoken_text"] if spoken_changed else None,
+                "new_thumbnail_text": checked["thumbnail_text"] if thumbnail_changed else None,
                 "new_body": checked["body"] if "body" in changes else None, "duration": duration,
                 "poster_start": poster_start, "poster_end": poster_end, "poster_feedback": poster_feedback}
         self.p.store.create_redo_plan(plan_id, job_id, json.dumps(args))
-        return {"plan_id": plan_id, "ad": f"{job_id} ({job['language']}): {job['text'][:80]}",
+        return {"plan_id": plan_id, "ad": f"{job_id} ({job['language']}): {job['spoken_text'][:self.p.s.messages.ad_label_chars]}",
                 "will_redo": redo, "will_reuse": reuse, "notes": notes,
-                "costs": self._costs(redo_stages, text_changed and duration is None, manual),
+                "costs": self._costs(redo_stages, needs_estimate, manual),
+                "next": "Show this plan to the owner. Only if they approve, call approve_redo with plan_id."}
+
+    def _plan_image_ad(self, job: dict[str, Any], changes: list[str], new_spoken_text: str | None,
+                       new_thumbnail_text: str | None) -> dict[str, Any]:
+        """Redo of an image ad the owner asked for, changing only the image words (a new image) or the dialogue (the
+        Meta ad copy; the image is kept). It has one stage and the result is again an image ad. Any other change
+        (body, video, poster) turns it into a video ad: see plan()."""
+        checked = self.p.validate_item({"language": job["language"], "ad_format": FORMAT_IMAGE,
+                                        "spoken_text": new_spoken_text or job["spoken_text"],
+                                        "thumbnail_text": new_thumbnail_text or job["thumbnail_text"],
+                                        "body": job["body"]})
+        new_image = "image" in changes or ("thumbnail_text" in changes and checked["thumbnail_text"] != job["thumbnail_text"])
+        spoken_changed = "spoken_text" in changes and checked["spoken_text"] != job["spoken_text"]
+        image_file = self._work(job["id"]) / IMAGE_AD_FILE
+        notes = []
+        if not new_image and not image_file.exists():
+            new_image = True
+            notes.append("The old image is no longer stored, so a new image is made.")
+        redo = [{"step": "image_ad", "what": "Make a new 4:5 image (1 gpt-image-2 call)"}] if new_image else []
+        reuse = [] if new_image else [{"step": "image_ad", "what": "The existing 4:5 image"}]
+        if spoken_changed:
+            redo.append({"step": "ad_copy", "what": "Use the new dialogue as the Meta ad text"})
+        plan_id = "r" + uuid.uuid4().hex[:6]
+        args = {"job_id": job["id"], "changes": changes, "start": 0 if new_image else 1, "format": FORMAT_IMAGE,
+                "new_spoken_text": checked["spoken_text"] if spoken_changed else None,
+                "new_thumbnail_text": checked["thumbnail_text"] if checked["thumbnail_text"] != job["thumbnail_text"] else None,
+                "new_body": None, "duration": None, "poster_start": None, "poster_end": None, "poster_feedback": None}
+        self.p.store.create_redo_plan(plan_id, job["id"], json.dumps(args))
+        return {"plan_id": plan_id, "ad": f"{job['id']} ({job['language']}, image ad): {job['spoken_text'][:self.p.s.messages.ad_label_chars]}",
+                "will_redo": redo, "will_reuse": reuse, "notes": notes,
+                "costs": {"gpt_image_calls": int(new_image), "veo_calls": 0, "gemini_calls": 0},
                 "next": "Show this plan to the owner. Only if they approve, call approve_redo with plan_id."}
 
     @staticmethod
@@ -193,17 +241,24 @@ class RedoPlanner:
         a = json.loads(row["args"])
         job = self._job(a["job_id"])
         start = a["start"]
-        if start <= STAGES.index("video") and self.p.store.video_calls_today() + 1 > self.p.s.limits.daily_video_cap:
+        is_image_ad = a.get("format") == FORMAT_IMAGE
+        if (not is_image_ad and start <= STAGES.index("video")
+                and self.p.store.video_calls_today() + 1 > self.p.s.limits.daily_video_cap):
             raise ValidationError("Daily video cap reached, so a new Veo clip cannot be made today.")
         if not self.p.store.set_redo_plan_status(plan_id, "pending", "approved"):
             raise ValidationError(f"Plan {plan_id} was already used.")
         try:
-            item = {"language": job["language"], "text": a["new_text"] or job["text"],
+            item = {"language": job["language"], "spoken_text": a["new_spoken_text"] or job["spoken_text"],
+                    "thumbnail_text": a["new_thumbnail_text"] or job["thumbnail_text"],
                     "body": a["new_body"] or job["body"], "duration": a["duration"] or job["duration"],
-                    "estimate": job["estimate"], "redo_of": job["id"], "review": REVIEW_PENDING}
-            if a["new_text"] and a["duration"] is None:
+                    "estimate": job["estimate"], "redo_of": job["id"], "review": REVIEW_PENDING,
+                    "ad_format": a.get("format", FORMAT_VIDEO)}
+            if is_image_ad:
+                item["duration"], item["estimate"] = None, None
+            elif (a["new_spoken_text"] or item["duration"] is None) and a["duration"] is None:
                 try:
-                    pick = self.p.services.durations([{"language": item["language"], "text": item["text"]}])[0]
+                    pick = self.p.services.durations([{"language": item["language"],
+                                                       "spoken_text": item["spoken_text"]}])[0]
                 except DurationEstimateError as exc:
                     raise ValidationError(str(exc)) from exc
                 item["duration"], item["estimate"] = pick["clip_seconds"], json.dumps(pick)
@@ -236,6 +291,10 @@ class RedoPlanner:
         """Copy the reusable files into the new job's folder; the normal stage cache then skips those stages."""
         old, new = self._work(old_id), self._work(new_id)
         new.mkdir(parents=True, exist_ok=True)
+        if a.get("format") == FORMAT_IMAGE:                      # an image ad has one stage, the 4:5 image
+            if start > 0:
+                shutil.copy2(old / IMAGE_AD_FILE, new / IMAGE_AD_FILE)
+            return
         for stage in STAGES[:start]:
             shutil.copy2(old / FILES[stage], new / FILES[stage])
         if a["poster_start"] is not None and STAGES[start] == "plan":

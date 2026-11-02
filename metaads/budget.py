@@ -19,9 +19,10 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from . import jobrunner
-from .adaccount import fetch_adsets, make_client, managed_account, managed_rows, sum_action
+from .adaccount import fetch_adsets, insights_field, make_client, managed_account, managed_rows, sum_action
 from .config import Settings
 from .jobs import JobStore
+from .messages import RAISED, WARN, blocks, entry, headline
 from .meta import GraphClient
 from .money import rupees
 from .notify import Notifier, TelegramNotifier
@@ -29,7 +30,6 @@ from .rules import decide, new_budget
 
 log = logging.getLogger("metaads.budget")
 
-ADSET_FIELDS = "id,name,campaign_id,daily_budget,insights.date_preset(maximum){conversions}"
 
 
 @dataclass
@@ -61,13 +61,14 @@ class BudgetRaiser:
         self.rules = settings.budget_increase
         self.result_action_type = settings.autopause.result_action_type     # "results" means the same as in autopause
         self.metric_field = settings.autopause.metric_field
+        self.adset_fields = f"id,name,campaign_id,daily_budget,{insights_field(settings, self.metric_field)}"
         self.client, self.account_id, self.campaigns, self.store, self.clock = client, account_id, campaigns, store, clock
 
     def run(self, apply: bool) -> RunResult:
         out = RunResult()
         now = self.clock()
         last = self.store.last_budget_increases()
-        for language, row, insights in managed_rows(fetch_adsets(self.client, self.account_id, ADSET_FIELDS),
+        for language, row, insights in managed_rows(fetch_adsets(self.client, self.account_id, self.adset_fields),
                                                     self.campaigns):
             out.checked += 1
             adset_id, name = str(row["id"]), row.get("name", "")
@@ -101,15 +102,19 @@ class BudgetRaiser:
         return out
 
 
-def report_text(result: RunResult, apply: bool) -> str:
-    mode = "live" if apply else "DRY RUN, nothing changed"
-    lines = [f"Budget increase ({mode}): {len(result.due)} of {result.checked} active ad sets due"]
-    for r in result.due:
-        verb = "RAISED" if r.id in result.raised else ("would raise" if not apply else "NOT raised")
-        lines.append(f"{verb}: {r.language} | {r.name} | Rs {rupees(r.old_budget)} -> Rs {rupees(r.new_budget)} | "
-                     f"results {r.results} | {r.reason}")
-    lines += [f"ERROR: {e}" for e in result.errors]
-    return "\n".join(lines)
+def report_text(result: RunResult, apply: bool) -> str | None:
+    """The alert: which ad sets got a higher budget and why. Nothing raised and nothing failed: no alert. A dry run
+    (nothing is ever raised) reports what it would raise, so trying the job out shows something."""
+    shown = [r for r in result.due if r.id in result.raised] if apply else result.due
+    if not shown and not result.errors:
+        return None
+    count = f"{len(shown)} ad set{'s' if len(shown) != 1 else ''}"
+    head = (headline(RAISED, f"Budget increase: {count} raised") if apply
+            else headline(RAISED, f"Budget increase DRY RUN: {count} would be raised (nothing was changed)"))
+    items = [entry(f"{r.language} · {r.name}", f"Daily budget: Rs {rupees(r.old_budget)} → Rs {rupees(r.new_budget)}",
+                   f"Why: {r.reason}", f"Results so far: {r.results}", n=i) for i, r in enumerate(shown, 1)]
+    problems = [headline(WARN, e) for e in result.errors]
+    return blocks(head if shown else None, *items, *problems)
 
 
 def run_job(settings: Settings, make_client: Callable[[], GraphClient], notifier: Notifier, environ, store: JobStore,
@@ -122,7 +127,7 @@ def run_job(settings: Settings, make_client: Callable[[], GraphClient], notifier
         "Budget increase", heartbeat, notifier, execute,
         summary=lambda r: f"checked {r.checked} active ad sets, due {len(r.due)}, raised {len(r.raised)}, "
                           f"errors {len(r.errors)}",
-        report=lambda r: report_text(r, apply) if r.due or r.errors else None)
+        report=lambda r: report_text(r, apply))
 
 
 def main(argv: list[str] | None = None) -> int:

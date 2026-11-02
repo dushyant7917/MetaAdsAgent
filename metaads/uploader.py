@@ -20,10 +20,12 @@ from typing import Any, Callable
 from . import media
 from .adaccount import campaign_env_var
 from .config import Settings, _resolve_path
-from .jobs import REVIEW_APPROVED, JobStore
+from .jobs import FORMAT_IMAGE, REVIEW_APPROVED, JobStore
 from .locks import CPU_LOCK
 from .meta import (GraphClient, GraphError, ad_name, ad_op, ad_set_name, adset_op, build_adset_fields,
-                   build_creative, build_targeting, default_start_time, parse_start_time, resolve_region_keys)
+                   build_creative, build_image_creative, build_targeting, default_start_time, parse_start_time,
+                   resolve_region_keys)
+from .messages import FAIL, OK, WARN, blocks, entry, headline
 from .notify import Notifier, NullNotifier
 from .pipeline import ValidationError
 
@@ -51,7 +53,7 @@ class MetaUploader:
         self.s = settings
         self.store = store
         self.notifier = notifier or NullNotifier()
-        self.client_factory = client_factory or (lambda token: GraphClient(token, settings.meta.api_version))
+        self.client_factory = client_factory or (lambda token: GraphClient.from_settings(token, settings, upload=True))
         self.sleep = sleep
         self.clock = clock
         self._active: set[str] = set()
@@ -99,7 +101,7 @@ class MetaUploader:
                     jobs.append(job)
             if errors:
                 raise ValidationError("; ".join(errors))
-        errors = [f"{j['id']}: video file missing ({j['ad_path']})" for j in jobs
+        errors = [f"{j['id']}: ad file missing ({j['ad_path']})" for j in jobs
                   if not j["ad_path"] or not Path(j["ad_path"]).is_file()]
         if errors:
             raise ValidationError("; ".join(errors))
@@ -158,11 +160,15 @@ class MetaUploader:
 
     # ---------- payloads ----------
     def _group(self, job: dict, i: int, env: MetaEnv, day: str, start: str, region_keys: list[str],
-               video_id: str, image_hash: str, adset_id: str | None) -> list[dict[str, Any]]:
+               video_id: str | None, image_hash: str, adset_id: str | None) -> list[dict[str, Any]]:
         cfg, acct = self.s.meta, env.ad_account_id
         lang = self.s.languages[job["language"]]
-        creative = build_creative(cfg, ad_name(lang, job["body"], job["text"], job["id"]), env.page_id,
-                                  env.ig_user_id, video_id, image_hash, job["text"], env.store_url)
+        if job["ad_format"] == FORMAT_IMAGE:
+            creative = build_image_creative(cfg, ad_name(lang, FORMAT_IMAGE, job["spoken_text"], job["id"], cfg.ad_name_preview_chars), env.page_id,
+                                            env.ig_user_id, image_hash, job["spoken_text"], env.store_url)
+        else:
+            creative = build_creative(cfg, ad_name(lang, job["body"], job["spoken_text"], job["id"], cfg.ad_name_preview_chars), env.page_id,
+                                      env.ig_user_id, video_id, image_hash, job["spoken_text"], env.store_url)
         group = []
         if not adset_id:
             fields = build_adset_fields(cfg, ad_set_name(lang, day, job["id"]), env.campaigns[job["language"]], start,
@@ -173,21 +179,21 @@ class MetaUploader:
 
     def _dry_run(self, jobs: list[dict], env: MetaEnv, start_time: str | None) -> list[dict[str, Any]]:
         now = self.clock()
-        day, start = now.astimezone().strftime("%Y-%m-%d"), start_time or default_start_time(now)
+        day, start = now.astimezone().strftime("%Y-%m-%d"), start_time or default_start_time(now, self.s.meta.start_hour_ist)
         out = []
         for i, job in enumerate(jobs):
             states = self.s.meta.language_states.get(job["language"]) or []
             keys = resolve_region_keys(None, _resolve_path(self.s.meta.regions_cache), self.s.meta.country, states)
             keys = [k or f"<region key of {st}>" for k, st in zip(keys, states)]
             ops = self._group(job, i, env, day, start, keys, "<video_id>", "<image_hash>", None)
-            out.append({"job_id": job["id"], "video": job["ad_path"], "ops": ops})
+            out.append({"job_id": job["id"], "ad_format": job["ad_format"], "file": job["ad_path"], "ops": ops})
         return out
 
     # ---------- the upload ----------
     def _run(self, upload_id: str, jobs: list[dict], env: MetaEnv, chat_id: str | None,
              start_time: str | None = None) -> None:
         failed: dict[str, str] = {}
-        start = start_time or default_start_time(self.clock())
+        start = start_time or default_start_time(self.clock(), self.s.meta.start_hour_ist)
         try:
             self._upload(upload_id, jobs, env, failed, start)
         except Exception as exc:                                          # a bug must not leave jobs "running"
@@ -237,12 +243,12 @@ class MetaUploader:
                      stage="processing")
             except (GraphError, OSError) as exc:
                 self._fail(failed, job["id"], "video", exc)
-        need = [j for j in live() if not state[j["id"]].get("video_id")]
+        need = [j for j in live() if j["ad_format"] != FORMAT_IMAGE and not state[j["id"]].get("video_id")]
         if need:
             with ThreadPoolExecutor(max_workers=min(self.s.limits.api_concurrency, len(need))) as pool:
                 list(pool.map(upload_video, need))
 
-        # 3. thumbnails: the reporter image, ALL of them in one call
+        # 3. images: the reporter image of a video ad, or the image ad itself, ALL of them in one call
         need = [j for j in live() if not state[j["id"]].get("image_hash")]
         files: dict[str, Path] = {}
         for j in need:
@@ -267,7 +273,7 @@ class MetaUploader:
                     self._fail(failed, jid, "thumbnail", "Meta returned no image hash")
 
         # 4. wait until Meta has processed every video (one status call covers all of them)
-        pending = {state[j["id"]]["video_id"]: j["id"] for j in live()}
+        pending = {state[j["id"]]["video_id"]: j["id"] for j in live() if j["ad_format"] != FORMAT_IMAGE}
         waited = 0.0
         while pending:
             try:
@@ -298,7 +304,7 @@ class MetaUploader:
         groups = []
         for i, j in enumerate(ready):
             st = state[j["id"]]
-            groups.append(self._group(j, i, env, day, start, regions[j["language"]], st["video_id"],
+            groups.append(self._group(j, i, env, day, start, regions[j["language"]], st.get("video_id"),
                                       st["image_hash"], st.get("adset_id")))
             save(j["id"], stage="publish")
         try:
@@ -321,6 +327,8 @@ class MetaUploader:
 
     def _thumbnail(self, job: dict) -> Path:
         work = Path(self.s.paths.work_dir) / job["id"]
+        if job["ad_format"] == FORMAT_IMAGE:
+            return Path(job["ad_path"])                  # an image ad is its own image
         image = work / "image.png"                       # what Veo animated: the ad's own first frame, already 9:16
         if image.is_file():
             return image
@@ -331,14 +339,15 @@ class MetaUploader:
     def _report(self, jobs: list[dict], start: str) -> str:
         rows = [self.store.get_meta_upload(j["id"]) or {} for j in jobs]
         ok = [r for r in rows if r.get("status") == "done"]
-        lines = [f"{len(ok)} of {len(jobs)} ads uploaded to Meta."]
+        items = []
         for j, r in zip(jobs, rows):
+            who = f"{self.s.languages[j['language']]} · {j['id']}"
             if r.get("status") == "done":
-                lines.append(f"{j['id']} ({j['language']}): ad set {r['adset_id']}, ad {r['ad_id']}")
+                items.append(entry(who, f"Ad set {r['adset_id']}", f"Ad {r['ad_id']}"))
             else:
-                lines.append(f"{j['id']} ({j['language']}) failed at {r.get('stage')}: {r.get('error')}")
-        if ok:
-            lines.append(f"Ads start at {start}.")
-        if len(ok) < len(jobs):
-            lines.append("Asking again for the failed ones continues where they stopped; nothing is created twice.")
-        return "\n".join(lines)
+                items.append(entry(f"{FAIL} {who}", f"Failed at {r.get('stage')}: {r.get('error')}"))
+        return blocks(
+            headline(OK if len(ok) == len(jobs) else WARN, f"{len(ok)} of {len(jobs)} ads uploaded to Meta"), *items,
+            f"Ads start at {start}." if ok else None,
+            "Asking again for the failed ones continues where they stopped; nothing is created twice."
+            if len(ok) < len(jobs) else None)

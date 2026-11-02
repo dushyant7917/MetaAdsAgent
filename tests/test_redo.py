@@ -8,7 +8,7 @@ from metaads.pipeline import ValidationError
 from metaads.redo import RedoPlanner
 from test_pipeline import Fakes, _pipeline, env  # noqa: F401  (env is a fixture)
 
-HI = {"language": "hi", "text": "Aisi news video banani hai?"}
+HI = {"language": "hi", "spoken_text": "Aisi news video banani hai?"}
 
 
 def _made(env_, **kw):
@@ -39,7 +39,7 @@ def test_a_plan_changes_and_spends_nothing_until_it_is_approved(env):
     assert steps(plan["will_redo"]) == ["image", "video", "transcribe", "plan", "render_hook", "merge"]
     assert steps(plan["will_reuse"]) == ["duration", "body"]                 # only the clip length can be kept
     assert plan["costs"] == {"gpt_image_calls": 1, "veo_calls": 1, "gemini_calls": 1}
-    assert fakes.calls == before and len(p.store.recent_jobs()) == 1
+    assert fakes.calls == before and len(p.store.recent_jobs(10)) == 1
 
 
 def test_a_bad_image_regenerates_the_chain_but_keeps_the_duration(env):
@@ -49,8 +49,8 @@ def test_a_bad_image_regenerates_the_chain_but_keeps_the_duration(env):
     new = p.store.get_job(done["job_id"])
     assert new["redo_of"] == job and new["duration"] == p.store.get_job(job)["duration"]
     assert Path(p.store.get_job(job)["ad_path"]).exists()                           # the old ad is kept
-    assert rec.videos[-1][1].startswith("Redo · ")
-    assert f" · id {rec.videos[-1][1].rsplit(' · id ', 1)[1]}" in rec.videos[-1][1]
+    caption = rec.videos[-1][1]
+    assert caption.startswith("Redo · Ad 1/1 · Hindi\nSays: ") and caption.rsplit("\n", 1)[1].startswith("id ")
 
 
 def test_wrong_poster_moment_reuses_image_clip_and_whisper_and_gives_the_planner_the_feedback(env):
@@ -61,7 +61,7 @@ def test_wrong_poster_moment_reuses_image_clip_and_whisper_and_gives_the_planner
     assert plan["costs"] == {"gpt_image_calls": 0, "veo_calls": 0, "gemini_calls": 1}
     rp.approve(plan["plan_id"])
     end = time.time() + 60
-    while len(p.store.recent_jobs()) < 2 or p.store.recent_jobs()[0]["status"] != "done":
+    while len(p.store.recent_jobs(10)) < 2 or p.store.recent_jobs(10)[0]["status"] != "done":
         assert time.time() < end
         time.sleep(0.2)
     assert fakes.calls == {"image": 1, "video": 1}                                  # no image, no Veo
@@ -87,12 +87,26 @@ def test_a_different_body_only_rejoins_the_existing_hook(env):
     assert fakes.calls == {"image": 1, "video": 1}
 
 
-def test_a_new_text_redoes_everything_and_estimates_the_duration_again(env):
+def test_new_spoken_text_keeps_the_image_and_estimates_the_duration_again(env):
+    fakes, p, _, job, rp = _made(env, thumbnail_text="Short headline")
+    plan, done = _run(p, rp, job, ["spoken_text"], new_spoken_text="Ye bilkul nayi news video hai")
+    assert steps(plan["will_redo"])[0] == "duration" and "image" not in steps(plan["will_redo"])
+    assert steps(plan["will_reuse"]).count("image") == 1
+    assert fakes.duration_calls == [1, 1] and fakes.calls == {"image": 1, "video": 2}      # same image, new clip
+    new = p.store.get_job(done["job_id"])
+    assert new["spoken_text"] == "Ye bilkul nayi news video hai" and new["thumbnail_text"] == "Short headline"
+    assert fakes.prompts[-1][0] == "Ye bilkul nayi news video hai"
+
+
+def test_new_thumbnail_text_makes_a_new_image_and_keeps_the_dialogue_and_duration(env):
     fakes, p, _, job, rp = _made(env)
-    plan, done = _run(p, rp, job, ["text"], new_text="Ye bilkul nayi news video hai")
-    assert steps(plan["will_redo"])[0] == "duration" and fakes.duration_calls == [1, 1]
-    assert fakes.calls == {"image": 2, "video": 2}
-    assert p.store.get_job(done["job_id"])["text"] == "Ye bilkul nayi news video hai"
+    plan, done = _run(p, rp, job, ["thumbnail_text"], new_thumbnail_text="Nayi headline")
+    assert steps(plan["will_redo"])[0] == "image" and "duration" not in steps(plan["will_redo"])
+    assert fakes.duration_calls == [1] and fakes.calls == {"image": 2, "video": 2}
+    new = p.store.get_job(done["job_id"])
+    assert new["spoken_text"] == HI["spoken_text"] and new["thumbnail_text"] == "Nayi headline"
+    assert fakes.image_requests[-1] == ("Nayi headline", "reporter")
+    assert fakes.prompts[-1][0] == HI["spoken_text"]                                       # the voice still says the old words
 
 
 def test_a_longer_clip_redoes_the_video_but_keeps_the_image(env):
@@ -156,3 +170,73 @@ def test_redoing_an_ad_that_was_not_waiting_leaves_its_state_alone(env):
     _, done = _run(p, rp, job, ["body"], new_body="teal")
     assert p.store.get_job(job)["review"] == "approved"
     assert p.store.get_job(done["job_id"])["review"] == "pending"
+
+
+def _image_ad(env_, **kw):
+    fakes = Fakes()
+    p, rec = _pipeline(env_, fakes)
+    batch = p.submit([dict(HI, ad_format="image", thumbnail_text="Headline", **kw)], chat_id="42", background=False)
+    return fakes, p, rec, p.status(batch)["ads"][0]["job_id"], RedoPlanner(p)
+
+
+def test_an_image_ad_with_new_thumbnail_text_gets_a_new_image_and_stays_an_image_ad(env):
+    fakes, p, rec, job, rp = _image_ad(env)
+    plan = rp.plan(job, ["thumbnail_text"], new_thumbnail_text="Nayi headline")
+    assert steps(plan["will_redo"]) == ["image_ad"] and plan["costs"] == {"gpt_image_calls": 1, "veo_calls": 0, "gemini_calls": 0}
+    done = rp.approve(plan["plan_id"])
+    _wait(p, done)
+    new = p.store.get_job(done["job_id"])
+    assert (new["ad_format"], new["thumbnail_text"], new["spoken_text"], new["redo_of"]) == ("image", "Nayi headline", HI["spoken_text"], job)
+    assert fakes.image_requests[-1] == ("Nayi headline", "image_ad") and fakes.calls == {"image": 2, "video": 0}
+    assert len(rec.photos) == 2 and "Redo" in rec.photos[-1][1]
+
+
+def test_an_image_ad_with_new_spoken_text_keeps_its_image_and_only_changes_the_ad_copy(env):
+    fakes, p, _, job, rp = _image_ad(env)
+    plan = rp.plan(job, ["spoken_text"], new_spoken_text="Ye nayi baat hai")
+    assert steps(plan["will_redo"]) == ["ad_copy"] and steps(plan["will_reuse"]) == ["image_ad"]
+    assert plan["costs"]["gpt_image_calls"] == 0
+    done = rp.approve(plan["plan_id"])
+    _wait(p, done)
+    new = p.store.get_job(done["job_id"])
+    assert new["ad_format"] == "image" and new["spoken_text"] == "Ye nayi baat hai" and new["thumbnail_text"] == "Headline"
+    assert fakes.calls == {"image": 1, "video": 0}                                       # the same image file was reused
+
+
+def test_asking_for_a_body_on_an_image_ad_turns_it_into_a_video_ad(env):
+    fakes, p, _, job, rp = _image_ad(env)
+    plan = rp.plan(job, ["body"], new_body="teal")
+    assert steps(plan["will_redo"])[:2] == ["duration", "image"] and any("image ad" in n for n in plan["notes"])
+    done = rp.approve(plan["plan_id"])
+    _wait(p, done)
+    new = p.store.get_job(done["job_id"])
+    assert new["ad_format"] == "video" and "teal" in Path(new["ad_path"]).name and new["thumbnail_text"] == "Headline"
+    assert fakes.calls == {"image": 2, "video": 1}                  # a reporter image for the video, plus the old 4:5 one
+    assert fakes.duration_calls == [1] and new["duration"] == 4      # the image ad had no clip length: it is estimated now
+    assert any("Gemini" in step["what"] for step in plan["will_redo"] if step["step"] == "duration")
+
+
+def test_a_fallback_image_ad_can_try_the_video_again_from_the_stored_reporter_image(env):
+    fakes = Fakes(video_always_fails=True)
+    p, rec = _pipeline(env, fakes)
+    batch = p.submit([dict(HI)], chat_id="42", background=False)
+    job = p.status(batch)["ads"][0]["job_id"]
+    assert p.store.get_job(job)["ad_format"] == "image" and p.store.get_job(job)["fallback_reason"]
+    details = RedoPlanner(p).details(job)
+    assert details["ad_format"] == "image" and "Veo is down" in details["fallback_reason"]
+    fakes.video_always_fails = False
+    rp = RedoPlanner(p)
+    plan = rp.plan(job, ["video"])
+    assert steps(plan["will_reuse"])[0] == "image" and plan["costs"]["gpt_image_calls"] == 0
+    done = rp.approve(plan["plan_id"])
+    _wait(p, done)
+    new = p.store.get_job(done["job_id"])
+    assert new["ad_format"] == "video" and new["fallback_reason"] is None and new["redo_of"] == job
+    assert [k for _, k in fakes.image_requests] == ["reporter", "image_ad"]            # no new reporter image was made
+
+
+def _wait(p, done):
+    end = time.time() + 60
+    while not p.status(done["batch_id"])["finished"] and time.time() < end:
+        time.sleep(0.2)
+    assert p.status(done["batch_id"])["done"] == 1

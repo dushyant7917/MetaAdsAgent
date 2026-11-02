@@ -13,6 +13,11 @@ def inr_to_paise(inr: float) -> int:
     return round(inr * PAISE_PER_RUPEE)
 
 
+def rs(amount_inr: float) -> str:
+    """A rupee amount as 'Rs 1,234.50' for reports (spend and thresholds are in rupees, not paise)."""
+    return f"Rs {amount_inr:,.2f}"
+
+
 def rupees(paise: int) -> str:
     """A paise amount as '1,234.50' for reports."""
     return f"{paise_to_inr(paise):,.2f}"

@@ -40,6 +40,9 @@ class Settings:
     def get(self, name: str, default: Any = None) -> Any:
         return self._data.get(name, default)
 
+    def items(self):
+        return self._data.items()
+
     def to_dict(self) -> dict[str, Any]:
         return self._data
 
@@ -55,6 +58,12 @@ def load_settings(path: str | None = None) -> Settings:
     data = yaml.safe_load(cfg_path.read_text())
     data["paths"] = {k: _resolve_path(v) for k, v in data["paths"].items()}
     return Settings(data)
+
+
+@lru_cache(maxsize=1)
+def load_product() -> dict[str, Any]:
+    """config/product.yaml: what the poster demo shows (poster planner) and the brief for writing hooks."""
+    return yaml.safe_load((PROJECT_ROOT / "config" / "product.yaml").read_text())
 
 
 def load_env_file(path: str | None = None) -> int:

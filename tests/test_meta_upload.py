@@ -80,8 +80,10 @@ def env(tmp_path, monkeypatch):
     s = Settings(d)
     store = JobStore(s.paths.db)
     batch_id, job_ids = store.create_batch(
-        [{"language": "hi", "text": "News reporter ho to ye video apke liye hai! Aisi news video banani seekhni hai?",
-          "body": "teal"}, {"language": "ta", "text": "Vanakkam", "body": "teal"}, {"language": "hi", "text": "Dusra", "body": None}])
+        [{"language": "hi", "spoken_text": "News reporter ho to ye video apke liye hai! Aisi news video banani seekhni hai?",
+          "thumbnail_text": "News reporter ho to ye video apke liye hai!", "body": "teal"},
+         {"language": "ta", "spoken_text": "Vanakkam", "thumbnail_text": "Vanakkam", "body": "teal"},
+         {"language": "hi", "spoken_text": "Dusra", "thumbnail_text": "Dusra", "body": None}])
     for jid in job_ids:
         (tmp_path / f"{jid}.mp4").write_bytes(b"video")
         img = tmp_path / "work" / jid / "image.png"
@@ -90,7 +92,7 @@ def env(tmp_path, monkeypatch):
         store.update_job(jid, status="done", ad_path=str(tmp_path / f"{jid}.mp4"))
     fake = FakeMeta()
     sleeps: list[float] = []
-    up = MetaUploader(s, store, client_factory=lambda tok: GraphClient(tok, "v25.0", transport=httpx.MockTransport(fake),
+    up = MetaUploader(s, store, client_factory=lambda tok: GraphClient.from_settings(tok, load_settings(), transport=httpx.MockTransport(fake),
                                                                        sleep=lambda x: None, backoff=0),
                       sleep=sleeps.append, clock=lambda: datetime(2026, 11, 1, 8, 0, tzinfo=IST))
     return up, store, fake, job_ids, batch_id, sleeps
@@ -129,6 +131,7 @@ def test_ad_payload_has_inline_creative_dependency_and_state_targeting(env):
     a = parse_qs(adset["body"])
     assert a["campaign_id"] == ["c-ta"] and a["status"] == ["ACTIVE"] and a["name"] == [f"Tamil | 2026-11-01 | {jobs[1]}"]
     assert json.loads(a["targeting"][0])["geo_locations"] == {"regions": [{"key": "key-Tamil Nadu"}]}
+    assert json.loads(a["attribution_spec"][0]) == [{"event_type": "CLICK_THROUGH", "window_days": 7}]   # 7-day click, no view-through
     assert ad["body"].endswith("&adset_id={result=adset_0:$.id}")
     b = parse_qs(ad["body"])
     video = json.loads(b["creative"][0])["object_story_spec"]["video_data"]
@@ -213,12 +216,12 @@ def test_rate_limit_is_waited_out_and_retried():
         if n["n"] == 1:
             return httpx.Response(400, json={"error": {"message": "slow down", "code": 17}})
         return httpx.Response(200, json={"id": "v1"})
-    c = GraphClient("t", "v25.0", transport=httpx.MockTransport(handler), sleep=waits.append, backoff=30)
+    c = GraphClient.from_settings("t", load_settings(), transport=httpx.MockTransport(handler), sleep=waits.append, backoff=30)
     assert c.get("x") == {"id": "v1"} and waits == [30]
 
 
 def test_other_graph_errors_are_not_retried():
-    c = GraphClient("t", "v25.0", transport=httpx.MockTransport(
+    c = GraphClient.from_settings("t", load_settings(), transport=httpx.MockTransport(
         lambda r: httpx.Response(400, json={"error": {"message": "bad", "code": 100, "error_user_msg": "Nope"}})))
     with pytest.raises(Exception, match="Nope"):
         c.get("x")
@@ -231,14 +234,14 @@ def test_batches_split_at_50_ops_without_separating_an_ad_from_its_ad_set():
         ops = json.loads(parse_qs(req.read().decode())["batch"][0])
         seen.append([o["name"] for o in ops])
         return httpx.Response(200, json=[{"code": 200, "body": json.dumps({"id": "1"})} for _ in ops])
-    c = GraphClient("t", "v25.0", transport=httpx.MockTransport(handler))
+    c = GraphClient.from_settings("t", load_settings(), transport=httpx.MockTransport(handler))
     groups = [[{"name": f"adset_{i}", "body": ""}, ad_op(f"ad_{i}", "1", "n", {}, None, f"adset_{i}")] for i in range(26)]
     assert len(c.batch(groups)) == 52 and [len(x) for x in seen] == [50, 2]
 
 
 def test_region_cache(tmp_path):
     calls = []
-    c = GraphClient("t", "v25.0", transport=httpx.MockTransport(
+    c = GraphClient.from_settings("t", load_settings(), transport=httpx.MockTransport(
         lambda r: calls.append(1) or httpx.Response(200, json={"data": [{"key": "7", "name": "Goa", "country_code": "IN"}]})))
     path = tmp_path / "r.json"
     assert resolve_region_keys(c, path, "IN", ["Goa"]) == ["7"] and resolve_region_keys(c, path, "IN", ["Goa"]) == ["7"]
@@ -249,8 +252,8 @@ def test_region_cache(tmp_path):
                                           (6, "2026-11-02T06:00:00+05:30"), (10, "2026-11-02T06:00:00+05:30"),
                                           (23, "2026-11-02T06:00:00+05:30")])
 def test_default_start_time_is_the_next_6am_ist(hour, expected):
-    assert default_start_time(datetime(2026, 11, 1, hour, 30, tzinfo=IST)) == expected
-    assert default_start_time(datetime(2026, 11, 1, hour, 30, tzinfo=IST).astimezone(timezone.utc)) == expected
+    assert default_start_time(datetime(2026, 11, 1, hour, 30, tzinfo=IST), BASE.meta.start_hour_ist) == expected
+    assert default_start_time(datetime(2026, 11, 1, hour, 30, tzinfo=IST).astimezone(timezone.utc), BASE.meta.start_hour_ist) == expected
 
 
 def test_owner_start_time_overrides_and_naive_means_ist(env):
@@ -264,9 +267,52 @@ def test_owner_start_time_overrides_and_naive_means_ist(env):
 
 
 def test_names_and_targeting():
-    assert ad_name("Hindi", "teal", "News reporter ho to ye video apke liye hai! Aisi news", "b1-1") == \
+    assert ad_name("Hindi", "teal", "News reporter ho to ye video apke liye hai! Aisi news", "b1-1", BASE.meta.ad_name_preview_chars) == \
         "Hindi | teal | News reporter ho to ye video apke liye… | b1-1"
-    assert ad_name("Hindi", None, "a | b\nc", "j") == "Hindi | - | a b c | j"
+    assert ad_name("Hindi", None, "a | b\nc", "j", BASE.meta.ad_name_preview_chars) == "Hindi | - | a b c | j"
     m = BASE.meta
     assert build_targeting(m, [])["geo_locations"] == {"countries": ["IN"]}
     assert build_targeting(m, [])["user_os"] == ["Android_ver_10.0_and_above"]
+
+
+def test_an_image_ad_uploads_its_picture_only_and_uses_a_single_image_creative(env, tmp_path):
+    up, store, fake, jobs, batch_id, _ = env
+    png = tmp_path / "ad.png"
+    png.write_bytes(b"png")
+    store.update_job(jobs[1], ad_format="image", ad_path=str(png))                       # Tamil
+    assert up.submit(job_ids=[jobs[1]], background=False)["started"]
+    kinds = _kinds(fake)
+    assert "advideos" not in kinds and kinds.count("adimages") == 1
+    assert ("GET", "graph.facebook.com/") not in fake.calls                                # no waiting for video processing
+    _, ad = fake.batches[0]
+    b = parse_qs(ad["body"])
+    spec = json.loads(b["creative"][0])["object_story_spec"]
+    assert "video_data" not in spec and spec["page_id"] == "p1"
+    link = spec["link_data"]
+    assert link["image_hash"] == f"h-{jobs[1]}.png" and link["message"] == "Vanakkam" and link["name"] == "Vanakkam"
+    assert link["link"] == ENV["META_STORE_URL"] and link["call_to_action"]["value"] == {"link": ENV["META_STORE_URL"]}
+    assert b["name"] == [f"Tamil | image | Vanakkam | {jobs[1]}"]
+    assert store.get_meta_upload(jobs[1])["status"] == "done" and store.get_meta_upload(jobs[1])["video_id"] is None
+
+
+def test_an_image_ad_and_video_ads_can_go_in_one_upload(env, tmp_path):
+    up, store, fake, jobs, batch_id, _ = env
+    png = tmp_path / "ad.png"
+    png.write_bytes(b"png")
+    store.update_job(jobs[1], ad_format="image", ad_path=str(png))
+    up.submit(batch_id=batch_id, background=False)
+    kinds = _kinds(fake)
+    assert kinds.count("advideos") == 2 and kinds.count("adimages") == 1 and len(fake.batches) == 1   # one image call for all
+    assert all(store.get_meta_upload(j)["status"] == "done" for j in jobs)
+
+
+def test_the_dry_run_names_the_format_and_never_needs_a_video_id_for_an_image_ad(env, tmp_path):
+    up, store, fake, jobs, batch_id, _ = env
+    png = tmp_path / "ad.png"
+    png.write_bytes(b"png")
+    store.update_job(jobs[1], ad_format="image", ad_path=str(png))
+    res = up.submit(job_ids=[jobs[0], jobs[1]], dry_run=True, background=False)
+    by_job = {a["job_id"]: a for a in res["ads"]}
+    assert by_job[jobs[0]]["ad_format"] == "video" and by_job[jobs[1]]["ad_format"] == "image"
+    spec = json.loads(parse_qs(by_job[jobs[1]]["ops"][-1]["body"])["creative"][0])["object_story_spec"]
+    assert "link_data" in spec and not fake.calls

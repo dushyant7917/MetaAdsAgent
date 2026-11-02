@@ -22,7 +22,6 @@ log = logging.getLogger("metaads.meta")
 RATE_LIMIT_CODES = {4, 17, 32, 613}     # app, account, page and custom throttling: worth waiting for
 BATCH_MAX_OPS = 50
 IST = timezone(timedelta(hours=5, minutes=30))
-START_HOUR_IST = 6                      # ad sets start at the next 6:00 IST unless the owner names a time
 
 
 class GraphError(RuntimeError):
@@ -48,12 +47,21 @@ class BatchResult:
 
 
 class GraphClient:
-    def __init__(self, token: str, version: str, timeout: float = 300, transport: httpx.BaseTransport | None = None,
-                 sleep: Callable[[float], None] = time.sleep, max_attempts: int = 3, backoff: float = 30):
+    def __init__(self, token: str, version: str, *, timeout: float, max_attempts: int, backoff: float,
+                 transport: httpx.BaseTransport | None = None, sleep: Callable[[float], None] = time.sleep):
         self.http = httpx.Client(timeout=timeout, transport=transport, headers={"Authorization": f"Bearer {token}"})
         self.base = f"https://graph.facebook.com/{version}"
         self.video_base = f"https://graph-video.facebook.com/{version}"
         self.sleep, self.max_attempts, self.backoff = sleep, max_attempts, backoff
+
+    @classmethod
+    def from_settings(cls, token: str, settings: Any, upload: bool = False, **overrides: Any) -> "GraphClient":
+        """A client with the API version, timeouts and rate-limit retries of settings.yaml (`upload`: the longer
+        timeout for sending videos and images); `overrides` replace any constructor argument."""
+        cfg, timeouts = settings.meta, settings.timeouts
+        args = {"timeout": timeouts.meta_upload if upload else timeouts.meta_read, "max_attempts": cfg.max_attempts,
+                "backoff": cfg.backoff_seconds, **overrides}
+        return cls(token, cfg.api_version, **args)
 
     def _call(self, send: Callable[[], httpx.Response]) -> Any:
         """Run one request; wait and retry only on rate-limit errors (anything else will not get better)."""
@@ -169,11 +177,11 @@ def resolve_region_keys(client: GraphClient | None, cache_path: str | Path, coun
 
 # ---------------- payload builders ----------------
 
-def default_start_time(now: datetime) -> str:
-    """The next 6:00 IST: today if it is not 6am yet, otherwise tomorrow."""
+def default_start_time(now: datetime, start_hour: int) -> str:
+    """The next `start_hour`:00 IST (settings.meta.start_hour_ist): today if it is not that hour yet, else tomorrow."""
     ist = now.astimezone(IST)
-    day = ist.date() + timedelta(days=0 if ist.hour < START_HOUR_IST else 1)
-    return datetime(day.year, day.month, day.day, START_HOUR_IST, tzinfo=IST).isoformat()
+    day = ist.date() + timedelta(days=0 if ist.hour < start_hour else 1)
+    return datetime(day.year, day.month, day.day, start_hour, tzinfo=IST).isoformat()
 
 
 def parse_start_time(value: str) -> str:
@@ -185,7 +193,7 @@ def parse_start_time(value: str) -> str:
     return (t if t.tzinfo else t.replace(tzinfo=IST)).isoformat(timespec="seconds")
 
 
-def _preview(text: str, limit: int = 40) -> str:
+def _preview(text: str, limit: int) -> str:
     text = re.sub(r"[|\s]+", " ", text).strip()
     if len(text) <= limit:
         return text
@@ -197,8 +205,9 @@ def ad_set_name(language: str, day: str, job_id: str) -> str:
     return f"{language} | {day} | {job_id}"
 
 
-def ad_name(language: str, body: str | None, text: str, job_id: str) -> str:
-    return f"{language} | {body or '-'} | {_preview(text)} | {job_id}"
+def ad_name(language: str, body: str | None, spoken_text: str, job_id: str, preview_chars: int) -> str:
+    """`body` is the body video's name, or "image" for an image ad; `preview_chars`: settings.meta.ad_name_preview_chars."""
+    return f"{language} | {body or '-'} | {_preview(spoken_text, preview_chars)} | {job_id}"
 
 
 def build_targeting(cfg: Any, region_keys: list[str | None]) -> dict[str, Any]:
@@ -216,6 +225,16 @@ def build_targeting(cfg: Any, region_keys: list[str | None]) -> dict[str, Any]:
             "age_min": cfg.age_min, "targeting_automation": {"advantage_audience": 0}}
 
 
+def attribution_window(cfg: Any) -> str:
+    """The insights name of the click window every ad set is attributed with: '7d_click'."""
+    return f"{cfg.attribution_click_days}d_click"
+
+
+def build_attribution_spec(cfg: Any) -> list[dict[str, Any]]:
+    """A conversion counts for the ad set when it follows a click within settings.meta.attribution_click_days days."""
+    return [{"event_type": "CLICK_THROUGH", "window_days": int(cfg.attribution_click_days)}]
+
+
 def build_adset_fields(cfg: Any, name: str, campaign_id: str, start_time: str, targeting: dict[str, Any],
                        app_id: str, store_url: str) -> dict[str, str]:
     return {
@@ -226,15 +245,28 @@ def build_adset_fields(cfg: Any, name: str, campaign_id: str, start_time: str, t
         "promoted_object": json.dumps({"application_id": app_id, "object_store_url": store_url,
                                        "custom_event_type": cfg.conversion_event}),
         "targeting": json.dumps(targeting),
+        "attribution_spec": json.dumps(build_attribution_spec(cfg)),
     }
 
 
 def build_creative(cfg: Any, name: str, page_id: str, ig_user_id: str, video_id: str, image_hash: str,
-                   text: str, store_url: str) -> dict[str, Any]:
-    """Single-video creative, sent inline with the ad (no separate /adcreatives call)."""
-    spec: dict[str, Any] = {"page_id": page_id, "video_data": {
-        "video_id": video_id, "image_hash": image_hash, "message": text, "title": text,
-        "call_to_action": {"type": cfg.cta, "value": {"link": store_url}}}}
+                   spoken_text: str, store_url: str) -> dict[str, Any]:
+    """Single-video creative, sent inline with the ad (no separate /adcreatives call). The ad copy is the dialogue."""
+    return _creative(name, page_id, ig_user_id, "video_data", {
+        "video_id": video_id, "image_hash": image_hash, "message": spoken_text, "title": spoken_text,
+        "call_to_action": {"type": cfg.cta, "value": {"link": store_url}}})
+
+
+def build_image_creative(cfg: Any, name: str, page_id: str, ig_user_id: str, image_hash: str,
+                         spoken_text: str, store_url: str) -> dict[str, Any]:
+    """Single-image creative (an image ad), inline like the video one. The ad copy is the dialogue."""
+    return _creative(name, page_id, ig_user_id, "link_data", {
+        "image_hash": image_hash, "link": store_url, "message": spoken_text, "name": spoken_text,
+        "call_to_action": {"type": cfg.cta, "value": {"link": store_url}}})
+
+
+def _creative(name: str, page_id: str, ig_user_id: str, kind: str, data: dict[str, Any]) -> dict[str, Any]:
+    spec: dict[str, Any] = {"page_id": page_id, kind: data}
     if ig_user_id:
         spec["instagram_user_id"] = ig_user_id
     return {"name": name, "object_story_spec": spec}

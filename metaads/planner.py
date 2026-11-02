@@ -5,9 +5,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Callable
 
-import yaml
-
-from .config import PROJECT_ROOT, Settings, load_settings, require_env
+from .config import Settings, load_product, load_settings, require_env
 from .media import PosterWindow
 
 LLMFn = Callable[[str], dict]
@@ -34,7 +32,7 @@ class PlanResult:
     notes: list[str] = field(default_factory=list)
 
 
-def build_prompt(text: str, language: str, words: list[dict], product: dict, guidance: str | None = None) -> str:
+def build_prompt(spoken_text: str, language: str, words: list[dict], product: dict, guidance: str | None = None) -> str:
     """X, Y only show the output format; no example hooks are given, so nothing biases the choice."""
     transcript = " ".join(f'[{w["i"]}]{w["word"]}' for w in words)
     feedback = (f"FEEDBACK ON AN EARLIER CHOICE\n{guidance.strip()}\n"
@@ -51,7 +49,7 @@ def build_prompt(text: str, language: str, words: list[dict], product: dict, gui
         f"{feedback}"
         "INPUT\n"
         f"Language code: {language}\n"
-        f'Hook text as written: "{text}"\n'
+        f'Hook text as written: "{spoken_text}"\n'
         "The words actually spoken, as recognized from the audio, each with an index number in brackets. The "
         "recognized spelling can differ from the written text and can be in another script, so match by meaning "
         "and sound, not by exact spelling:\n"
@@ -110,16 +108,16 @@ def seconds_for_span(words: list[dict], a: int, b: int, clip_duration: float, s:
     return PosterWindow(round(start, 3), round(end, 3))
 
 
-def plan_poster_window(text: str, language: str, words: list[dict], clip_duration: float,
+def plan_poster_window(spoken_text: str, language: str, words: list[dict], clip_duration: float,
                        settings: Settings | None = None, llm: LLMFn | None = None,
                        product: dict | None = None, guidance: str | None = None) -> PlanResult:
     s = settings or load_settings()
     if not words:
         raise ValueError("No recognized words: cannot place the poster")
-    product = product or yaml.safe_load((PROJECT_ROOT / "config" / "product.yaml").read_text())
+    product = product or load_product()
     notes: list[str] = []
     try:
-        answer = (llm or gemini_llm(s))(build_prompt(text, language, words, product, guidance))
+        answer = (llm or gemini_llm(s))(build_prompt(spoken_text, language, words, product, guidance))
         if _valid(answer, len(words)):
             a, b = int(answer["start_idx"]), int(answer["end_idx"])
             phrase = " ".join(w["word"] for w in words[a:b + 1])
@@ -134,7 +132,8 @@ def plan_poster_window(text: str, language: str, words: list[dict], clip_duratio
         phrase = " ".join(w["word"] for w in words[a:b + 1])
         return PlanResult(seconds_for_span(words, a, b, clip_duration, s), a, b, phrase, "keyword", notes)
 
-    start = clip_duration * 0.4
-    window = PosterWindow(round(start, 3), round(min(start + max(s.poster.min_seconds, 2.0), clip_duration), 3))
+    start = clip_duration * s.poster.fallback_start_share
+    length = max(s.poster.min_seconds, s.poster.fallback_seconds)
+    window = PosterWindow(round(start, 3), round(min(start + length, clip_duration), 3))
     notes.append("No keyword found; using the middle of the clip")
     return PlanResult(window, None, None, "", "default", notes)

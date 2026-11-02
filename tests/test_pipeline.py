@@ -45,20 +45,25 @@ def env(tmp_path):
 
 
 class Fakes:
-    def __init__(self, fail_image_for=None, video_fail_first=False, block_text=None, durations_fail=False):
+    def __init__(self, fail_image_for=None, video_fail_first=False, block_text=None, durations_fail=False,
+                 video_always_fails=False, transcribe_fails=False):
         self.calls = {"image": 0, "video": 0}
         self.fail_image_for, self.video_fail_first, self.block_text = fail_image_for, video_fail_first, block_text
         self.prompts = []
+        self.image_requests = []              # (thumbnail text, kind)
         self.duration_calls = []
         self.plan_hints = []
         self.durations_fail = durations_fail
+        self.video_always_fails, self.transcribe_fails = video_always_fails, transcribe_fails
 
     def services(self, s):
-        def image(text, out):
+        def image(text, out, kind="reporter"):
             self.calls["image"] += 1
+            self.image_requests.append((text, kind))
             if self.fail_image_for and self.fail_image_for in text:
                 raise RuntimeError("image API exploded")
-            _ff("-f", "lavfi", "-i", "color=c=red:s=720x1280", "-frames:v", "1", str(out))
+            size = "1024x1280" if kind == "image_ad" else "720x1280"
+            _ff("-f", "lavfi", "-i", f"color=c=red:s={size}", "-frames:v", "1", str(out))
             return out
 
         def video(text, lang, out, dur, img):
@@ -68,10 +73,14 @@ class Fakes:
                 raise VideoBlockedError("content policy")
             if self.video_fail_first and self.calls["video"] == 1:
                 raise RuntimeError("video hiccup")
+            if self.video_always_fails:
+                raise RuntimeError("Veo is down")
             _clip(out, "red", "720x1280", 4)
             return out
 
         def transcribe(path, lang):
+            if self.transcribe_fails:
+                raise RuntimeError("whisper crashed")
             return [{"i": i, "word": w, "start": 0.3 + i * 0.5, "end": 0.7 + i * 0.5}
                     for i, w in enumerate("aap ko aisi news video banani hai".split())]
 
@@ -84,21 +93,24 @@ class Fakes:
             self.duration_calls.append(len(items))
             if self.durations_fail:
                 raise DurationEstimateError("Could not estimate the speaking time. Please try again.")
-            return [{"speech_seconds": 99.0 if len(it["text"].split()) > 60 else 3.0,
-                     "clip_seconds": 8 if len(it["text"].split()) > 60 else 4, "attempts": 1} for it in items]
+            return [{"speech_seconds": 99.0 if len(it["spoken_text"].split()) > 60 else 3.0,
+                     "clip_seconds": 8 if len(it["spoken_text"].split()) > 60 else 4, "attempts": 1} for it in items]
 
         return Services(image, video, transcribe, plan, durations)
 
 
 class Recorder:
     def __init__(self):
-        self.texts, self.videos = [], []
+        self.texts, self.videos, self.photos = [], [], []
 
     def send_text(self, chat_id, text):
         self.texts.append(text)
 
     def send_video(self, chat_id, path, caption):
         self.videos.append((str(path), caption))
+
+    def send_photo(self, chat_id, path, caption):
+        self.photos.append((str(path), caption))
 
     send_report = send_text
 
@@ -112,9 +124,9 @@ def _pipeline(env, fakes):
 def test_one_ad_per_input_even_for_identical_inputs(env):
     fakes = Fakes()
     p, rec = _pipeline(env, fakes)
-    items = [{"language": "hi", "text": "Aisi news video banani hai?"},
-             {"language": "ta", "text": "Aisi news video banani hai?"},
-             {"language": "hi", "text": "Aisi news video banani hai?", "body": "teal"}]
+    items = [{"language": "hi", "spoken_text": "Aisi news video banani hai?"},
+             {"language": "ta", "spoken_text": "Aisi news video banani hai?"},
+             {"language": "hi", "spoken_text": "Aisi news video banani hai?", "body": "teal"}]
     batch = p.submit(items, chat_id="42", background=False)
     st = p.status(batch)
     assert (st["total"], st["done"], st["failed"], st["finished"]) == (3, 3, 0, True)
@@ -122,7 +134,7 @@ def test_one_ad_per_input_even_for_identical_inputs(env):
     ads = [Path(a["ad_path"]) for a in st["ads"]]
     assert len({str(a) for a in ads}) == 3 and all(a.exists() for a in ads)
     assert "teal-darkmint-mintbox" in ads[2].name
-    assert len(rec.videos) == 3 and rec.texts[-1].startswith("3 of 3 ads created")
+    assert len(rec.videos) == 3 and rec.texts[-1].startswith("✅ 3 of 3 ads created")
     s, tmp = env
     meta = json.loads(ads[0].with_suffix(".json").read_text())
     assert meta["language"] == "hi" and meta["plan_method"] == "llm" and meta["poster_window"]["end"] > meta["poster_window"]["start"]
@@ -134,8 +146,8 @@ def test_one_ad_per_input_even_for_identical_inputs(env):
 def test_durations_are_requested_only_for_texts_without_one_and_the_estimate_is_logged(env):
     fakes = Fakes()
     p, _ = _pipeline(env, fakes)
-    items = [{"language": "hi", "text": "Aisi news video banani hai?"}, {"language": "ta", "text": "x y z"},
-             {"language": "hi", "text": "Aisi news video banani hai?", "duration": 8}]      # this one names its length
+    items = [{"language": "hi", "spoken_text": "Aisi news video banani hai?"}, {"language": "ta", "spoken_text": "x y z"},
+             {"language": "hi", "spoken_text": "Aisi news video banani hai?", "duration": 8}]      # this one names its length
     batch = p.submit(items, background=False)
     assert fakes.duration_calls == [2]                                # only the two without a duration are sent
     assert sorted(pr[1] for pr in fakes.prompts) == [4, 4, 8]
@@ -148,13 +160,117 @@ def test_durations_are_requested_only_for_texts_without_one_and_the_estimate_is_
 def test_failure_in_one_item_does_not_stop_the_others(env):
     fakes = Fakes(block_text="BOOM")
     p, rec = _pipeline(env, fakes)
-    batch = p.submit([{"language": "hi", "text": "ok one"}, {"language": "hi", "text": "BOOM two"},
-                      {"language": "ta", "text": "ok three"}], background=False)
+    batch = p.submit([{"language": "hi", "spoken_text": "ok one"}, {"language": "hi", "spoken_text": "BOOM two"},
+                      {"language": "ta", "spoken_text": "ok three"}], background=False)
     st = p.status(batch)
-    assert (st["done"], st["failed"]) == (2, 1)
-    assert "content policy" in st["ads"][1]["error"]
+    assert (st["done"], st["failed"]) == (3, 0)                       # the blocked item became an image ad
+    assert [a["ad_format"] for a in st["ads"]] == ["video", "image", "video"]
     assert fakes.calls["video"] == 3                                  # the blocked item was NOT retried
-    assert rec.texts[-1].startswith("2 of 3 ads created") and "Ad 2" in rec.texts[-1]
+    assert "content policy" in st["ads"][1]["fallback_reason"]
+    assert rec.texts[-1].startswith("✅ 3 of 3 ads created\n\n1 of them are image ads (1 because") and "\n\n" in rec.texts[-1]
+
+
+def test_failure_in_a_stage_other_than_the_video_is_still_a_failure(env):
+    fakes = Fakes(transcribe_fails=True)
+    p, rec = _pipeline(env, fakes)
+    batch = p.submit([{"language": "hi", "spoken_text": "ok one"}], background=False)
+    st = p.status(batch)
+    assert (st["done"], st["failed"]) == (0, 1) and "whisper crashed" in st["ads"][0]["error"]
+    assert not rec.photos
+
+
+def test_when_the_hook_video_fails_even_after_the_retry_an_image_ad_is_made(env):
+    fakes = Fakes(video_always_fails=True)
+    p, rec = _pipeline(env, fakes)
+    batch = p.submit([{"language": "hi", "spoken_text": "Dialogue words", "thumbnail_text": "Headline"}],
+                     chat_id="42", background=False)
+    st = p.status(batch)["ads"][0]
+    assert fakes.calls["video"] == 2                                  # tried, retried, then gave up on the video
+    job = p.store.get_job(st["job_id"])
+    assert (job["status"], job["ad_format"]) == ("done", "image") and "Veo is down" in job["fallback_reason"]
+    assert job["review"] == "pending" and job["hook_path"] is None    # it still waits for the owner's decision
+    assert fakes.image_requests == [("Headline", "reporter"), ("Headline", "image_ad")]
+    s, _ = env
+    info = media.probe(Path(job["ad_path"]), s)
+    assert (info.width, info.height) == (1024, 1280) and job["ad_path"].endswith("_image.png")
+    meta = json.loads(Path(job["ad_path"]).with_suffix(".json").read_text())
+    assert meta["ad_format"] == "image" and "Veo is down" in meta["fallback_reason"]
+    assert not rec.videos and len(rec.photos) == 1
+    caption = rec.photos[0][1]
+    assert caption.startswith("🖼 Image ad · Ad 1/1 · Hindi\nSays: Dialogue words\nThumbnail: Headline\n⚠️ The hook video failed: ")
+    assert caption.endswith(f"\nid {job['id']}")                                                  # the id stays the last line
+    assert "Waiting for your decision" in rec.texts[-1]
+
+
+def test_the_image_ad_fallback_failing_too_fails_the_ad_with_both_reasons(env):
+    fakes = Fakes(video_always_fails=True)
+    real_services = fakes.services
+
+    def services(s):
+        sv = real_services(s)
+        inner = sv.image
+
+        def image(text, out, kind="reporter"):
+            if kind == "image_ad":
+                raise RuntimeError("image API exploded")
+            return inner(text, out, kind)
+        sv.image = image
+        return sv
+
+    fakes.services = services
+    p, rec = _pipeline(env, fakes)
+    batch = p.submit([{"language": "hi", "spoken_text": "Dialogue words"}], background=False)
+    job = p.status(batch)["ads"][0]
+    assert job["status"] == "failed" and "Veo is down" in job["error"] and "image-ad fallback also failed" in job["error"]
+    assert "image API exploded" in job["error"] and not rec.photos
+
+
+def test_an_image_ad_can_be_asked_for_and_makes_no_video_duration_or_cap_use(env):
+    fakes = Fakes()
+    p, rec = _pipeline(env, fakes)
+    batch = p.submit([{"language": "ta", "spoken_text": "Dialogue words", "thumbnail_text": "Headline", "ad_format": "image"}],
+                     background=False)
+    job = p.store.get_job(p.status(batch)["ads"][0]["job_id"])
+    assert (job["status"], job["ad_format"], job["fallback_reason"], job["duration"]) == ("done", "image", None, None)
+    assert fakes.calls == {"image": 1, "video": 0} and fakes.duration_calls == []
+    assert fakes.image_requests == [("Headline", "image_ad")] and p.store.video_calls_today() == 0
+    assert len(rec.photos) == 1 and rec.photos[0][1].startswith("🖼 Image ad · Ad 1/1 · Tamil\nSays: Dialogue words\nThumbnail: Headline\nid ")
+
+
+def test_the_thumbnail_text_goes_to_the_image_and_the_spoken_text_to_the_voice(env):
+    fakes = Fakes()
+    p, _ = _pipeline(env, fakes)
+    p.submit([{"language": "hi", "spoken_text": "What she says", "thumbnail_text": "What the image says"},
+              {"language": "hi", "spoken_text": "Same words"}], background=False)
+    assert sorted(fakes.image_requests) == [("Same words", "reporter"), ("What the image says", "reporter")]
+    assert sorted(pr[0] for pr in fakes.prompts) == ["Same words", "What she says"]
+    jobs = p.store.recent_jobs(10)
+    assert sorted((j["spoken_text"], j["thumbnail_text"]) for j in jobs) == [
+        ("Same words", "Same words"), ("What she says", "What the image says")]
+
+
+def test_the_daily_video_cap_counts_only_video_ads(env):
+    s, _ = env
+    d = copy.deepcopy(s.to_dict())
+    d["limits"]["daily_video_cap"] = 1
+    p = Pipeline(Settings(d), JobStore(s.paths.db), Fakes().services(s), Recorder())
+    p.submit([{"language": "hi", "spoken_text": "a", "ad_format": "image"}] * 3 + [{"language": "hi", "spoken_text": "b"}],
+             background=False)
+    with pytest.raises(ValidationError, match="Daily video cap"):
+        p.submit([{"language": "hi", "spoken_text": "c"}], background=False)
+
+
+def test_an_old_database_with_one_text_column_gets_both_new_ones(tmp_path):
+    db = tmp_path / "old.sqlite"
+    with sqlite3.connect(db) as c:
+        c.executescript("CREATE TABLE jobs (id TEXT PRIMARY KEY, batch_id TEXT, idx INTEGER, language TEXT, text TEXT,"
+                        " body TEXT, duration INTEGER, status TEXT, stage TEXT, error TEXT, hook_path TEXT,"
+                        " ad_path TEXT, attempts INTEGER DEFAULT 0, created REAL, updated REAL, estimate TEXT);"
+                        "INSERT INTO jobs (id, batch_id, idx, language, text, status) VALUES ('j', 'b', 0, 'hi', 'old words', 'done');")
+    store = JobStore(db)
+    job = store.get_job("j")
+    assert (job["spoken_text"], job["thumbnail_text"], job["ad_format"]) == ("old words", "old words", "video")
+    assert "text" not in job and store.hook_body_pairs() == {("hi", "old words", "old words", None)}
 
 
 def test_retry_resumes_without_repeating_the_image_step(env):
@@ -162,7 +278,7 @@ def test_retry_resumes_without_repeating_the_image_step(env):
     d = copy.deepcopy(s.to_dict())
     fakes = Fakes(video_fail_first=True)
     p = Pipeline(Settings(d), JobStore(s.paths.db), fakes.services(Settings(d)), Recorder())
-    batch = p.submit([{"language": "hi", "text": "retry me"}], background=False)
+    batch = p.submit([{"language": "hi", "spoken_text": "retry me"}], background=False)
     assert p.status(batch)["done"] == 1
     assert fakes.calls == {"image": 1, "video": 2}                    # image kept, only the failed step redone
     assert fakes.prompts[-1][2] is not None                           # the image reached the video step
@@ -171,18 +287,18 @@ def test_retry_resumes_without_repeating_the_image_step(env):
 def test_transient_video_error_is_retried_once(env):
     fakes = Fakes(video_fail_first=True)
     p, _ = _pipeline(env, fakes)
-    batch = p.submit([{"language": "hi", "text": "retry me"}], background=False)
+    batch = p.submit([{"language": "hi", "spoken_text": "retry me"}], background=False)
     assert p.status(batch)["done"] == 1 and fakes.calls["video"] == 2
 
 
 def test_validation_is_all_or_nothing(env):
     p, _ = _pipeline(env, Fakes())
     with pytest.raises(ValidationError, match="Unsupported language 'xx'"):
-        p.submit([{"language": "hi", "text": "fine"}, {"language": "xx", "text": "bad"}], background=False)
+        p.submit([{"language": "hi", "spoken_text": "fine"}, {"language": "xx", "spoken_text": "bad"}], background=False)
     with pytest.raises(ValidationError, match="not found"):
-        p.submit([{"language": "hi", "text": "fine", "body": "purple"}], background=False)
+        p.submit([{"language": "hi", "spoken_text": "fine", "body": "purple"}], background=False)
     with pytest.raises(ValidationError, match="At most"):
-        p.submit([{"language": "hi", "text": "x"}] * 11, background=False)
+        p.submit([{"language": "hi", "spoken_text": "x"}] * (BASE.limits.max_batch_items + 1), background=False)
     assert p.store.video_calls_since(0) == 0                           # nothing ran
 
 
@@ -190,7 +306,7 @@ def test_duration_failure_refuses_the_batch_before_anything_is_generated(env):
     fakes = Fakes(durations_fail=True)
     p, _ = _pipeline(env, fakes)
     with pytest.raises(ValidationError, match="Could not estimate"):
-        p.submit([{"language": "hi", "text": "a"}, {"language": "ta", "text": "b"}], background=False)
+        p.submit([{"language": "hi", "spoken_text": "a"}, {"language": "ta", "spoken_text": "b"}], background=False)
     assert fakes.calls == {"image": 0, "video": 0} and fakes.duration_calls == [2]
 
 
@@ -200,7 +316,7 @@ def test_daily_video_cap_refuses_whole_batch(env):
     d["limits"]["daily_video_cap"] = 2
     p = Pipeline(Settings(d), JobStore(s.paths.db), Fakes().services(s), Recorder())
     with pytest.raises(ValidationError, match="Daily video cap"):
-        p.submit([{"language": "hi", "text": "a"}] * 3, background=False)
+        p.submit([{"language": "hi", "spoken_text": "a"}] * 3, background=False)
 
 
 # ---------- recovery after a restart, stuck-job report, timeouts ----------
@@ -214,7 +330,7 @@ DEAD = f"999999999@{pipeline_mod._boot_id()}:dead"          # a server process t
 
 def _orphan(p, stage="video", owner=DEAD, status="running", updated_ago=0):
     """A job a previous server left behind, as if it died while the job was at `stage`."""
-    batch, ids = p.store.create_batch([{"language": "hi", "text": "Aisi news video banani hai?", "duration": 4}],
+    batch, ids = p.store.create_batch([{"language": "hi", "spoken_text": "Aisi news video banani hai?", "thumbnail_text": "Aisi news video banani hai?", "duration": 4}],
                                       "42", owner)
     p.store.update_job(ids[0], status=status, stage=stage)
     if updated_ago:
@@ -242,7 +358,7 @@ def test_jobs_left_by_a_dead_server_are_resumed_from_their_cached_stages(env):
     _wait_finished(p, batch)
     assert p.status(batch)["done"] == 1
     assert fakes.calls == {"image": 0, "video": 1}                     # the cached image was not paid for again
-    assert any("Resuming: Ad 1 (hi)" in t for t in rec.texts) and len(rec.videos) == 1
+    assert any("Resuming: Ad 1 (Hindi)" in t for t in rec.texts) and len(rec.videos) == 1
     assert p.store.get_job(job)["owner"] == p.owner
 
 
@@ -271,7 +387,7 @@ def test_a_job_with_no_progress_is_reported_once(env):
     _, fresh = _orphan(p, owner=p.owner, updated_ago=60)
     _, queued = _orphan(p, owner=p.owner, status="queued", updated_ago=60 * 60)
     assert p.check_stuck() == [stale]
-    assert "Ad 1 (hi)" in rec.texts[-1] and "stage 'video'" in rec.texts[-1] and "26 min" in rec.texts[-1]
+    assert "Ad 1 (Hindi) may be stuck" in rec.texts[-1] and "stage 'video'" in rec.texts[-1] and "26 min" in rec.texts[-1]
     assert p.check_stuck() == []                                        # not repeated for the same stage
     p.store.update_job(stale, stage="transcribe")                       # progress, then stuck again: reported again
     with sqlite3.connect(p.store.path) as c:
@@ -297,9 +413,9 @@ def test_an_old_database_gets_the_owner_column(tmp_path):
 
 
 def test_new_ads_wait_for_the_owner_and_the_summary_asks_for_a_decision(env):
-    fakes = Fakes(block_text="BOOM")
+    fakes = Fakes(fail_image_for="BOOM")
     p, rec = _pipeline(env, fakes)
-    batch = p.submit([{"language": "hi", "text": "ok one"}, {"language": "hi", "text": "BOOM two"}], background=False)
+    batch = p.submit([{"language": "hi", "spoken_text": "ok one"}, {"language": "hi", "spoken_text": "BOOM two"}], background=False)
     waiting = p.store.awaiting_review_jobs()
     assert [j["id"] for j in waiting] == [f"{batch}-1"]               # the failed ad is not waiting for a decision
     assert rec.texts[-1].endswith(REVIEW_PROMPT)
@@ -307,19 +423,19 @@ def test_new_ads_wait_for_the_owner_and_the_summary_asks_for_a_decision(env):
 
 def test_without_review_nothing_waits_and_nobody_is_asked(env):
     p, rec = _pipeline(env, Fakes())
-    p.submit([{"language": "hi", "text": "ok one"}], background=False, review=False)
+    p.submit([{"language": "hi", "spoken_text": "ok one"}], background=False, review=False)
     assert p.store.awaiting_review_jobs() == [] and REVIEW_PROMPT not in rec.texts[-1]
 
 
 def test_a_summary_with_only_failures_does_not_ask_for_a_decision(env):
-    p, rec = _pipeline(env, Fakes(block_text="BOOM"))
-    p.submit([{"language": "hi", "text": "BOOM one"}], background=False)
+    p, rec = _pipeline(env, Fakes(fail_image_for="BOOM"))
+    p.submit([{"language": "hi", "spoken_text": "BOOM one"}], background=False)
     assert REVIEW_PROMPT not in rec.texts[-1]
 
 
 def test_set_review_stamps_the_decision_time_and_rejects_unknown_states(env):
     p, _ = _pipeline(env, Fakes())
-    batch = p.submit([{"language": "hi", "text": "ok one"}], background=False)
+    batch = p.submit([{"language": "hi", "spoken_text": "ok one"}], background=False)
     job = f"{batch}-1"
     assert p.store.get_job(job)["reviewed"] is None
     p.store.set_review([job], "dropped")

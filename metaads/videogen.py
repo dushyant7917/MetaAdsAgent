@@ -22,12 +22,12 @@ def _status(exc: Exception) -> int | None:
     return getattr(exc, "status_code", None) or getattr(exc, "code", None)
 
 
-def _backoff(attempt: int) -> None:
-    time.sleep(min(15 * 2 ** attempt, 120))
+def _backoff(attempt: int, s: Settings) -> None:
+    time.sleep(min(s.generation.backoff_seconds * 2 ** attempt, s.generation.backoff_max_seconds))
 
 
-def vertex_prompt(text: str, language: str, s: Settings) -> str:
-    return s.generation.prompt.format(language=s.languages[language], text=text)
+def vertex_prompt(spoken_text: str, language: str, s: Settings) -> str:
+    return s.generation.prompt.format(language=s.languages[language], spoken_text=spoken_text)
 
 
 def vertex_config(duration: int, s: Settings):
@@ -44,7 +44,7 @@ def vertex_client(s: Settings):
                         http_options=types.HttpOptions(timeout=s.timeouts.vertex_request * 1000))
 
 
-def _generate(text: str, language: str, out: Path, duration: int, image_path: str | Path | None,
+def _generate(spoken_text: str, language: str, out: Path, duration: int, image_path: str | Path | None,
                      s: Settings, limiter: RateLimiter, max_retries: int) -> Path:
     from google.genai import types
 
@@ -52,7 +52,7 @@ def _generate(text: str, language: str, out: Path, duration: int, image_path: st
         raise VideoGenerationError("Veo image-to-video needs the thumbnail image")
     client = vertex_client(s)
     image = types.Image(image_bytes=Path(image_path).read_bytes(), mime_type="image/png")
-    prompt, config = vertex_prompt(text, language, s), vertex_config(duration, s)
+    prompt, config = vertex_prompt(spoken_text, language, s), vertex_config(duration, s)
 
     for attempt in range(max_retries + 1):
         limiter.acquire()                        # every attempt counts against the rate limit
@@ -61,7 +61,7 @@ def _generate(text: str, language: str, out: Path, duration: int, image_path: st
             break
         except Exception as exc:
             if _status(exc) == 429 and attempt < max_retries:
-                _backoff(attempt)
+                _backoff(attempt, s)
                 continue
             raise VideoGenerationError(f"Veo request failed: {exc}") from exc
 
@@ -86,10 +86,11 @@ def _generate(text: str, language: str, out: Path, duration: int, image_path: st
     return out
 
 
-def generate_video(text: str, language: str, out_mp4: str | Path, duration: int,
+def generate_video(spoken_text: str, language: str, out_mp4: str | Path, duration: int,
                    image_path: str | Path | None = None, settings: Settings | None = None,
-                   limiter: RateLimiter | None = None, max_retries: int = 4) -> Path:
-    """Generate the 9:16 clip of the reporter in `image_path` speaking `text` in `language` (code)."""
+                   limiter: RateLimiter | None = None, max_retries: int | None = None) -> Path:
+    """Generate the 9:16 clip of the reporter in `image_path` speaking `spoken_text` in `language` (code)."""
     s = settings or load_settings()
     limiter = limiter or get_limiter("video", s.limits.video_rpm)
-    return _generate(text, language, Path(out_mp4), duration, image_path, s, limiter, max_retries)
+    retries = s.generation.max_retries if max_retries is None else max_retries
+    return _generate(spoken_text, language, Path(out_mp4), duration, image_path, s, limiter, retries)

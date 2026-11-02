@@ -92,7 +92,7 @@ def pings(monkeypatch):
 
 def go(fake, apply, notes=None, env=ENV):
     notes = notes or Notes()
-    client = lambda: GraphClient("tok", "v25.0", transport=httpx.MockTransport(fake), sleep=lambda x: None, backoff=0)
+    client = lambda: GraphClient.from_settings("tok", load_settings(), transport=httpx.MockTransport(fake), sleep=lambda x: None, backoff=0)
     return run_job(S, client, notes, env, apply, "https://hc-ping.com/x"), notes
 
 
@@ -108,16 +108,22 @@ def test_one_read_and_one_batch_pause_only_the_losers(pings):
     assert fake.reads[0]["path"].endswith("/act_111/adsets")
     assert json.loads(fake.reads[0]["filtering"]) == [{"field": "effective_status", "operator": "IN", "value": ["ACTIVE"]}]
     assert "date_preset(maximum)" in fake.reads[0]["fields"]
+    assert 'action_attribution_windows(["7d_click"])' in fake.reads[0]["fields"]            # the same click window as the ad sets
     assert [(op["relative_url"], op["body"]) for op in fake.batches[0]] == [("1", "status=PAUSED"), ("3", "status=PAUSED")]
     assert pings == ["/start", ""]
-    assert len(notes.texts) == 1 and "PAUSED: Hindi | as 1" in notes.texts[0] and "2 of 5" in notes.texts[0]
+    assert len(notes.texts) == 1
+    text = notes.texts[0]
+    assert text.startswith("⏸ Auto-pause: 2 ad sets paused\n\n1. Hindi · as 1\n   Why: no results after spending Rs 200.00 "
+                           "(the limit is Rs 150.00)\n   Spend Rs 200.00 · results 0\n\n2. Tamil · as 3\n")      # a blank line between ad sets
+    assert "cost per result Rs 140.00 is above the Rs 130.00 limit for ad sets with 10+ results (this one has 10)" in text
+    assert "as 2" not in text and "as 4" not in text                                                # only paused ones are listed
 
 
 def test_dry_run_reads_once_and_never_writes(pings):
     fake = FakeMeta([[row("1", "c-hi", 200, 0)]])
     code, notes = go(fake, apply=False)
     assert code == 0 and len(fake.reads) == 1 and fake.batches == []
-    assert "DRY RUN" in notes.texts[0] and "would pause: Hindi | as 1" in notes.texts[0]
+    assert "DRY RUN: 1 ad set would be paused" in notes.texts[0] and "1. Hindi · as 1" in notes.texts[0]
 
 
 def test_nothing_flagged_means_no_write_and_no_telegram(pings):
@@ -142,13 +148,14 @@ def test_failed_pause_is_reported_and_fails_the_run(pings):
     fake = FakeMeta([[row("1", "c-hi", 200, 0), row("2", "c-hi", 300, 0)]], fail_pause=["1"])
     code, notes = go(fake, apply=True)
     assert code == 1 and pings == ["/start", "/fail"]
-    assert "PAUSED: Hindi | as 2" in notes.texts[0] and "NOT paused: Hindi | as 1" in notes.texts[0]
-    assert "could not pause as 1" in notes.texts[0]
+    assert "Auto-pause: 1 ad set paused" in notes.texts[0] and "1. Hindi · as 2" in notes.texts[0]
+    assert "Hindi · as 1" not in notes.texts[0]                                                      # not paused: not listed
+    assert "⚠️ could not pause as 1" in notes.texts[0]
 
 
 def test_failed_read_alerts_and_fails(pings):
     code, notes = go(FakeMeta([[]], fail_read=True), apply=True)
-    assert code == 1 and pings == ["/start", "/fail"] and "FAILED" in notes.texts[0] and "token expired" in notes.texts[0]
+    assert code == 1 and pings == ["/start", "/fail"] and "Auto-pause failed" in notes.texts[0] and "token expired" in notes.texts[0]
 
 
 def test_no_campaign_ids_fails_instead_of_silently_doing_nothing(pings):

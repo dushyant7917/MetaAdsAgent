@@ -16,6 +16,7 @@ from typing import Callable, Iterator, Protocol, TypeVar
 import httpx
 
 from .config import Settings, load_env_file, load_settings
+from .messages import FAIL, blocks, headline
 from .notify import Notifier
 
 log = logging.getLogger("metaads.jobrunner")
@@ -28,13 +29,14 @@ class JobResult(Protocol):
 R = TypeVar("R", bound=JobResult)
 
 
-def ping(url: str, suffix: str = "") -> None:
+def ping(url: str, suffix: str = "", settings: Settings | None = None) -> None:
     """healthchecks.io style heartbeat; a failed ping is logged and never fails the run."""
     if not url:
         return
-    for attempt in (1, 2):
+    s = settings or load_settings()
+    for attempt in range(1, s.limits.heartbeat_attempts + 1):
         try:
-            httpx.get(url.rstrip("/") + suffix, timeout=10).raise_for_status()
+            httpx.get(url.rstrip("/") + suffix, timeout=s.timeouts.heartbeat).raise_for_status()
             return
         except httpx.HTTPError as e:
             log.warning("heartbeat ping %r failed (attempt %d): %s", suffix or "ok", attempt, e)
@@ -81,7 +83,7 @@ def run_job(label: str, heartbeat: str, notifier: Notifier, execute: Callable[[]
         result = execute()
     except Exception as e:
         log.exception("%s failed", label)
-        notify(notifier, f"{label} FAILED: {e}")
+        notify(notifier, blocks(headline(FAIL, f"{label} failed"), str(e)))
         ping(heartbeat, "/fail")
         return 1
     log.info("%s", summary(result))

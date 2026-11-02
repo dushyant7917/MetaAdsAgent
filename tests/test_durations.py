@@ -15,7 +15,7 @@ def no_sleep(monkeypatch):
 
 
 def texts(n):
-    return [{"language": "hi", "text": f"text number {i}"} for i in range(n)]
+    return [{"language": "hi", "spoken_text": f"text number {i}"} for i in range(n)]
 
 
 class FakeLLM:
@@ -51,7 +51,7 @@ def test_each_text_gets_its_own_call_and_answers_come_back_in_order(n):
 
 
 def test_different_languages_and_scripts_are_listed_with_their_codes():
-    items = [{"language": "ta", "text": "செய்தி வீடியோ"}, {"language": "hi", "text": "Aisi news video banani hai?"}]
+    items = [{"language": "ta", "spoken_text": "செய்தி வீடியோ"}, {"language": "hi", "spoken_text": "Aisi news video banani hai?"}]
     prompts = []
     pick_durations(items, S, llm=lambda p: prompts.append(p) or [{"id": 0, "speech_seconds": 2.0}])
     assert any('0. (ta) "செய்தி வீடியோ"' in p for p in prompts)

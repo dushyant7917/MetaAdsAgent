@@ -21,9 +21,13 @@ owner talks about by reply-to, id, or language and position. Every waiting ad mu
 |---|---|
 | approve / ok / upload (one, some, "approve all", "rest are fine") | one `upload_ads(job_ids=[...])` for all approved ads together |
 | drop / delete / discard it | `drop_ads(job_ids=[...])` |
-| what is wrong or what to change ("image is bad", "voice cut off", "different body") | pick `changes` with the table in `ad-redo`, then `plan_redo` and straight away `approve_redo`: the feedback is the go-ahead, do not ask "go ahead?". Reply with one line saying what is being redone (it costs a Veo clip when the image or video changes) |
+| what is wrong or what to change ("image is bad", "voice cut off", "different body", "change the image words") | pick `changes` with the table in `ad-redo`, then `plan_redo` and straight away `approve_redo`: the feedback is the go-ahead, do not ask "go ahead?". Reply with one line saying what is being redone (it costs a Veo clip when the image or video changes) |
 
 The redone ad arrives in the chat with its own "Waiting for your decision" and goes through this loop again.
+
+Image ads wait the same way. They arrive as a photo with a caption headed "Image ad" (asked for, or made because the
+hook video failed: the caption says why). Approve or drop them like any ad; a video that failed can be tried again
+with a `video` redo (see `ad-redo`).
 
 ## Never guess: ask
 Do not act on an ad, and ask about it, when:

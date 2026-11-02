@@ -102,3 +102,21 @@ def test_normalize_image_pads_with_black_and_never_crops(tmp_path):
     assert pixel(0, 640)[0] > 200 and pixel(719, 640)[0] > 200      # full width kept (red at both side edges)
     assert pixel(360, 10) == (0, 0, 0) and pixel(360, 1270) == (0, 0, 0)   # black bars top and bottom
     assert pixel(360, 110)[0] > 200 and pixel(360, 1170)[0] > 200   # image starts right after a 100 px bar
+
+
+def test_a_gpt_image_size_becomes_exactly_4_by_5_with_black_bars_and_an_exact_one_is_unchanged(tmp_path):
+    image_ad = S.images.image_ad
+    w, h = image_ad.width, image_ad.height
+    assert (w, h) == (1024, 1280) and image_ad.size == "1024x1280"                # the size the API returned exactly 4:5
+    for size, bars in (("1024x1536", "sides"), ("1024x1024", "top-bottom"), (f"{w}x{h}", None)):
+        src = tmp_path / f"{size}.png"
+        subprocess.run([S.paths.ffmpeg, "-loglevel", "error", "-y", "-f", "lavfi", "-i", f"color=c=red:s={size}",
+                        "-frames:v", "1", str(src)], check=True)
+        out = tmp_path / f"out-{size}.png"
+        media.normalize_image(src, out, w, h, settings=S)
+        info = media.probe(out, S)
+        assert (info.width, info.height) == (w, h)
+        raw = subprocess.run([S.paths.ffmpeg, "-loglevel", "error", "-i", str(out), "-vf", f"crop=1:1:{0}:{h // 2}",
+                              "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], check=True, capture_output=True).stdout
+        left_edge_is_black = tuple(raw) == (0, 0, 0)
+        assert left_edge_is_black is (bars == "sides")                          # 2:3 is narrower than 4:5: bars left and right

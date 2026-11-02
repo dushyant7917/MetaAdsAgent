@@ -6,7 +6,8 @@ set -euo pipefail
 PROFILE="${PROFILE:-metaadsbot}"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 PROFILE_HOME="$HOME/.hermes/profiles/$PROFILE"
-UV="$(ls "$HOME"/.hermes/tools/uv-*/uv | head -n1)"
+source "$(dirname "$0")/lib.sh"
+UV="$(find_uv)"
 GEMINI_MODEL="${GEMINI_MODEL:-gemini-3.7-flash}"
 
 if [ ! -d "$PROFILE_HOME" ]; then
@@ -23,11 +24,14 @@ hermes -p "$PROFILE" config set model.base_url https://generativelanguage.google
 hermes -p "$PROFILE" config set display.memory_notifications off
 
 # Role and skills from the repo: every folder in hermes/skills/ becomes a skill of the profile.
-install -m 600 "$REPO/hermes/SOUL.md" "$PROFILE_HOME/SOUL.md"
+# {{section.key}} placeholders in them are filled from config/settings.yaml (metaads.skilltext), so the text never
+# states a number the config no longer has.
+render() { "$UV" run --frozen --project "$REPO" python -m metaads.skilltext "$1" "$2" && chmod "$3" "$2"; }
+render "$REPO/hermes/SOUL.md" "$PROFILE_HOME/SOUL.md" 600
 for dir in "$REPO"/hermes/skills/*/; do
   name="$(basename "$dir")"
   mkdir -p "$PROFILE_HOME/skills/$name"
-  install -m 644 "$dir/SKILL.md" "$PROFILE_HOME/skills/$name/SKILL.md"
+  render "$dir/SKILL.md" "$PROFILE_HOME/skills/$name/SKILL.md" 644
 done
 # Skills this repo used to ship under other names: remove them, or the bot would see both.
 rm -rf "$PROFILE_HOME/skills/ad-hook-creator" "$PROFILE_HOME/skills/meta-ads"

@@ -14,15 +14,16 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from . import jobrunner
-from .adaccount import fetch_adsets, make_client, managed_account, managed_rows, sum_action
+from .adaccount import fetch_adsets, insights_field, make_client, managed_account, managed_rows, sum_action
 from .config import Settings
+from .messages import PAUSED, WARN, blocks, entry, headline
 from .meta import GraphClient
+from .money import rs
 from .notify import Notifier, TelegramNotifier
 from .rules import evaluate
 
 log = logging.getLogger("metaads.autopause")
 
-ADSET_FIELDS = "id,name,campaign_id,insights.date_preset(maximum){spend,conversions}"
 
 
 @dataclass
@@ -49,13 +50,14 @@ def pause_op(name: str, adset_id: str) -> dict:
 class AutoPauser:
     def __init__(self, settings: Settings, client: GraphClient, account_id: str, campaigns: dict[str, str]):
         self.rules = settings.autopause
+        self.adset_fields = f"id,name,campaign_id,{insights_field(settings, f'spend,{self.rules.metric_field}')}"
         self.client = client
         self.account_id = account_id
         self.campaigns = campaigns
 
     def run(self, apply: bool) -> RunResult:
         out = RunResult()
-        for language, row, insights in managed_rows(fetch_adsets(self.client, self.account_id, ADSET_FIELDS),
+        for language, row, insights in managed_rows(fetch_adsets(self.client, self.account_id, self.adset_fields),
                                                     self.campaigns):
             stat = AdSetStat(str(row["id"]), row.get("name", ""), language, float(insights.get("spend") or 0),
                              sum_action(insights.get(self.rules.metric_field), self.rules.result_action_type))
@@ -76,14 +78,19 @@ class AutoPauser:
         return out
 
 
-def report_text(result: RunResult, apply: bool) -> str:
-    mode = "live" if apply else "DRY RUN, nothing paused"
-    lines = [f"Auto-pause ({mode}): {len(result.flagged)} of {result.checked} active ad sets flagged"]
-    for stat, reason in result.flagged:
-        verb = "PAUSED" if stat.id in result.paused else ("would pause" if not apply else "NOT paused")
-        lines.append(f"{verb}: {stat.language} | {stat.name} | spend {stat.spend:.2f}, results {stat.results} | {reason}")
-    lines += [f"ERROR: {e}" for e in result.errors]
-    return "\n".join(lines)
+def report_text(result: RunResult, apply: bool) -> str | None:
+    """The alert: which ad sets were paused and why. Nothing paused and nothing failed: no alert. A dry run (nothing is
+    ever paused) reports what it would pause, so trying the job out shows something."""
+    shown = [(s, r) for s, r in result.flagged if s.id in result.paused] if apply else result.flagged
+    if not shown and not result.errors:
+        return None
+    count = f"{len(shown)} ad set{'s' if len(shown) != 1 else ''}"
+    head = (headline(PAUSED, f"Auto-pause: {count} paused") if apply
+            else headline(PAUSED, f"Auto-pause DRY RUN: {count} would be paused (nothing was changed)"))
+    items = [entry(f"{stat.language} · {stat.name}", f"Why: {reason}", f"Spend {rs(stat.spend)} · results {stat.results}",
+                   n=i) for i, (stat, reason) in enumerate(shown, 1)]
+    problems = [headline(WARN, e) for e in result.errors]
+    return blocks(head if shown else None, *items, *problems)
 
 
 def run_job(settings: Settings, make_client: Callable[[], GraphClient], notifier: Notifier, environ, apply: bool,
@@ -96,7 +103,7 @@ def run_job(settings: Settings, make_client: Callable[[], GraphClient], notifier
         "Auto-pause", heartbeat, notifier, execute,
         summary=lambda r: f"checked {r.checked} active ad sets, flagged {len(r.flagged)}, paused {len(r.paused)}, "
                           f"errors {len(r.errors)}",
-        report=lambda r: report_text(r, apply) if r.flagged or r.errors else None)
+        report=lambda r: report_text(r, apply))
 
 
 def main(argv: list[str] | None = None) -> int:

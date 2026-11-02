@@ -31,3 +31,43 @@ fallback_keywords:
   - व्हिडिओ
   - வீடியோ
   - వీడియో
+
+# What the hook writer (Hermes) is told about the ads. The sample hooks are past WINNING Hindi ads, written by the
+# owner as <thumbnail text | spoken dialogue>; they are the style reference until real winners exist
+# (get_hook_performance returns those). They are also never proposed again as new hooks.
+hook_brief:
+  product: >
+    An Android app that makes a news video in about a minute, with the reporter's own channel photo and name, so a
+    news reporter or news channel owner can post daily news videos. The ads speak to reporters (पत्रकार) and news
+    channel owners.
+  rules:
+    - The thumbnail text is short and punchy. It is either the same words as the spoken line, or a shortened lead
+      of it.
+    - The spoken line is what the reporter says to the camera. It must be speakable within 8 seconds.
+    - The spoken line often continues with a call to action. When the hook is about making that kind of video it
+      contains the phrase that points at the video the app makes ("such a news video"), because the poster demo
+      is shown over exactly those words.
+    - Write in the language's own script, with the product words (news, video, reporter, app, phone, channel,
+      minute) kept in English in Latin letters, exactly as the samples do.
+    - Every new hook takes a different angle from the recent hooks and from each other (who it speaks to, the old way
+      against the new way, speed, owning the channel, the phone). Copy the style of what won, avoid the patterns of
+      what kept failing.
+  sample_hooks:
+    - {thumbnail_text: "News reporter हो तो यह video आपके लिए है!", spoken_text: "News reporter हो तो यह video आपके लिए है! ऐसी news video बनानी सीखनी है?"}
+    - {thumbnail_text: "News reporter हो तो ऐसी news video बनाना आना चाहिए!", spoken_text: "News reporter हो तो ऐसी news video बनाना आना चाहिए!"}
+    - {thumbnail_text: "फ़र्ज़ी news reporter कैसे होते हैं?", spoken_text: "फ़र्ज़ी news reporter कैसे होते हैं? वो होते हैं जिन्हें ऐसी news video बनानी नहीं आती!"}
+    - {thumbnail_text: "Reporter हो तो ये app आपके काम का है!", spoken_text: "Reporter हो तो ये app आपके काम का है! इसे इस्तेमाल करके ऐसी video बनाना सीखो।"}
+    - {thumbnail_text: "हर reporter के phone में ये app होना चाहिए!", spoken_text: "हर reporter के phone में ये app होना चाहिए! ताकि ऐसी news video बना सको!"}
+    - {thumbnail_text: "News channel वालों के लिए game changer!", spoken_text: "News channel वालों के लिए game changer! Channel को ऐसी news video से market करो!"}
+    - {thumbnail_text: "हर news reporter के phone में ये app ज़रूर होना चाहिए!", spoken_text: "हर news reporter के phone में ये app ज़रूर होना चाहिए! ताकि वो ऐसी news video बना सके।"}
+    - {thumbnail_text: "हर पत्रकार के phone में ये app ज़रूर होना चाहिए!", spoken_text: "हर पत्रकार के phone में ये app ज़रूर होना चाहिए! ताकि वो ऐसी news video बना सके।"}
+    - {thumbnail_text: "अगर आप news reporter हो तो ये app आपके लिए है!", spoken_text: "अगर आप news reporter हो तो ये app आपके लिए है! इसमें ऐसी news reel बन जाती है!"}
+    - {thumbnail_text: "पुराने तरीके से news poster बनाना बंद करो!", spoken_text: "पुराने तरीके से news poster बनाना बंद करो, और ऐसी news video बनाना शुरू!"}
+    - {thumbnail_text: "New video बनाना सीखें सिर्फ़ 1 minute में!", spoken_text: "New video बनाना सीखें सिर्फ़ 1 minute में!"}
+    - {thumbnail_text: "क्या आपको भी मेरी तरह एक famous reporter बनना है?", spoken_text: "क्या आपको भी मेरी तरह एक famous reporter बनना है? तो ऐसी news video बनाना सीखो!"}
+    - {thumbnail_text: "पुराने तरीके से news video बनाना बंद करो!", spoken_text: "पुराने तरीके से news video बनाना बंद करो! और ऐसी video बनाना सीखो!"}
+    - {thumbnail_text: "News video बनाओ सिर्फ़ 1 minute में!", spoken_text: "News video बनाओ सिर्फ़ 1 minute में!"}
+    - {thumbnail_text: "रोज़ ताज़ा खबर वाली news video आपके news channel के photo और नाम के साथ", spoken_text: "रोज़ ताज़ा खबर वाली news video आपके news channel के photo और नाम के साथ, ऐसे बनाओ!"}
+    - {thumbnail_text: "रोज़ नई news video आपके news channel के photo और नाम के साथ", spoken_text: "रोज़ नई news video आपके news channel के photo और नाम के साथ, ऐसे बनाओ!"}
+    - {thumbnail_text: "हर पत्रकार के phone में होना चाहिए!", spoken_text: "हर पत्रकार के phone में होना चाहिए ऐसी news video बनाने वाला app!"}
+    - {thumbnail_text: "पुरानी पत्रकारिता खत्म। अब AI news video का नया दौर शुरू!", spoken_text: "पुरानी पत्रकारिता खत्म। अब AI news video का नया दौर शुरू!"}

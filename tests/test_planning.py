@@ -9,7 +9,8 @@ from metaads.config import Settings, load_settings
 from metaads.jobs import JobStore
 from metaads.meta import IST, GraphClient
 from metaads.money import inr_to_paise, paise_to_inr, rupees
-from metaads.planning import (AdSet, Inputs, PlanningError, Planner, allocate, build_plan, launch_days_left, month_end,
+from metaads.performance import AdSet, format_stats, hook_outcomes, image_share
+from metaads.planning import (Inputs, PlanningError, Planner, allocate, build_plan, launch_days_left, month_end,
                               next_midnight, project)
 
 BASE = load_settings().to_dict()
@@ -29,9 +30,10 @@ S = settings()
 
 
 def adset(id="1", language="Hindi", active=True, budget=50000, spend=0.0, results=0, recent_spend=None,
-          recent_results=0.0, spend_today=0.0, last_raise=None, job_id=None, hook=None, made=0.0) -> AdSet:
+          recent_results=0.0, spend_today=0.0, last_raise=None, job_id=None, hook=None, made=0.0,
+          ad_format=None, body=None) -> AdSet:
     return AdSet(id, f"as {id}", language, active, budget, spend, results, recent_spend, recent_results, spend_today,
-                 last_raise, job_id, hook, made)
+                 last_raise, job_id, hook, made, ad_format, body)
 
 
 def inputs(adsets=(), spent=0.0, now=NOW, used=(), bodies=None, videos=0, languages=("Hindi", "Tamil")) -> Inputs:
@@ -51,11 +53,11 @@ def test_money_conversions_round_trip():
     (datetime(2026, 11, 30, 3, 0, tzinfo=IST), 1),
 ])
 def test_launch_days_start_at_the_next_start_time(now, days):
-    assert launch_days_left(now) == days
+    assert launch_days_left(now, S) == days
 
 
 def test_utc_clock_is_read_in_ist():
-    assert launch_days_left(datetime(2026, 11, 1, 8, 30, tzinfo=timezone.utc)) == 29      # = 14:00 IST
+    assert launch_days_left(datetime(2026, 11, 1, 8, 30, tzinfo=timezone.utc), S) == 29      # = 14:00 IST
 
 
 def test_allocate_adds_up_and_follows_weights():
@@ -186,25 +188,92 @@ def test_win_rate_and_loser_cost_come_from_history_once_there_is_some():
     assert not any("prior" in n for n in plan["notes"])          # 10 decided ad sets are enough history
 
 
-def test_the_daily_video_cap_limits_new_hook_ads():
+def test_the_daily_video_cap_turns_the_extra_new_hooks_into_image_ads():
     plan = build_plan(inputs(videos=BASE["limits"]["daily_video_cap"] - 2), S)
-    assert plan["new_ads_total"] == 2 and any("video cap" in n for n in plan["notes"])
+    videos = sum(c["new_hook_video_ads"] for c in plan["campaigns"])
+    images = sum(c["new_hook_image_ads"] for c in plan["campaigns"])
+    assert videos == 2 and videos + images == sum(c["new_hook_ads"] for c in plan["campaigns"]) == plan["new_ads_total"]
+    assert images > 0 and any("video cap" in n for n in plan["notes"])
+
+
+def _decided(fmt: str, wins: int, losses: int, start: int = 0) -> list[AdSet]:
+    """Ad sets of one format with a decided outcome: wins reached the bar (and were paused later, so they commit no
+    more spend), losses were paused early."""
+    won = [adset(id=f"{fmt}w{start + i}", active=False, spend=3000, results=60, ad_format=fmt) for i in range(wins)]
+    lost = [adset(id=f"{fmt}l{start + i}", active=False, spend=300, results=0, ad_format=fmt) for i in range(losses)]
+    return won + lost
+
+
+def _new_hook_formats(plan: dict) -> tuple[int, int]:
+    return (sum(c["new_hook_video_ads"] for c in plan["campaigns"]), sum(c["new_hook_image_ads"] for c in plan["campaigns"]))
+
+
+def test_format_stats_count_decided_ad_sets_per_format_and_ignore_foreign_ones():
+    stats = format_stats(_decided("video", 2, 8) + _decided("image", 5, 5) + [adset(id="x", spend=3000, results=60)], S)
+    assert (stats["video"]["decided"], stats["video"]["wins"]) == (10, 2) and (stats["image"]["wins"], stats["image"]["decided"]) == (5, 10)
+    assert stats["video"]["win_rate"] == pytest.approx((2 + 1.5) / 20, abs=1e-3)     # smoothed with the prior
+    assert stats["image"]["win_rate"] == pytest.approx((5 + 1.5) / 20, abs=1e-3)
+
+
+def test_the_format_that_wins_more_gets_more_new_hooks():
+    video_better = build_plan(inputs(_decided("video", 8, 2) + _decided("image", 1, 9)), S)
+    image_better = build_plan(inputs(_decided("video", 1, 9) + _decided("image", 8, 2)), S)
+    v1, i1 = _new_hook_formats(video_better)
+    v2, i2 = _new_hook_formats(image_better)
+    assert v1 > i1 and i2 > v2 and v1 + i1 == v2 + i2 > 0
+    assert "image ads" in video_better["format_reason"] and video_better["format_stats"]["video"]["wins"] == 8
+
+
+def test_neither_format_drops_below_the_floor():
+    stats = format_stats(_decided("video", 30, 0) + _decided("image", 0, 30), S)
+    assert image_share(stats, S) == pytest.approx(0.10)                                # the floor, not the 5% the rates give
+    assert image_share(format_stats(_decided("video", 0, 30) + _decided("image", 30, 0), S), S) == pytest.approx(0.90)
+
+
+def test_with_no_history_new_hooks_split_evenly_and_the_split_adds_up():
+    plan = build_plan(inputs(), S)
+    v, i = _new_hook_formats(plan)
+    assert plan["format_stats"]["video"]["decided"] == 0 and abs(v - i) <= 1
+    for c in plan["campaigns"]:
+        assert c["new_hook_video_ads"] + c["new_hook_image_ads"] == c["new_hook_ads"] <= c["new_ads"]
+
+
+def test_proven_hook_ads_do_not_count_as_image_or_video_new_hooks():
+    win = adset(id="9", spend=3000, results=60, job_id="j1", hook=("hi", "the hook", "the hook"), ad_format="video")
+    plan = build_plan(inputs([win], bodies={"hi": [DEFAULT_BODY, "teal-darkmint-mintbox"]}), S)
+    hindi = next(c for c in plan["campaigns"] if c["language"] == "Hindi")
+    assert hindi["new_ads"] == hindi["new_hook_video_ads"] + hindi["new_hook_image_ads"] + sum(
+        len(h["bodies"]) for h in hindi["proven_hook_ads"])
+
+
+def test_hook_outcomes_list_winners_and_recent_losers_with_both_texts():
+    won = adset(id="1", spend=3000, results=60, hook=("hi", "good words", "good headline"), ad_format="image", body=None)
+    lost_old = adset(id="2", active=False, spend=300, results=0, hook=("hi", "old fail", "old fail"), made=1.0, ad_format="video")
+    lost_new = adset(id="3", active=False, spend=300, results=2, hook=("hi", "new fail", "new fail"), made=2.0, ad_format="video")
+    running = adset(id="4", spend=100, results=3, hook=("hi", "still running", "x"))
+    other = adset(id="5", language="Tamil", spend=3000, results=60, hook=("ta", "tamil words", "tamil"))
+    out = hook_outcomes([won, lost_old, lost_new, running, other], S, "Hindi")
+    assert [w["spoken_text"] for w in out["winners"]] == ["good words"] and out["winners"][0]["thumbnail_text"] == "good headline"
+    assert out["winners"][0]["ad_format"] == "image" and out["winners"][0]["cpr_inr"] == 50.0
+    assert [l["spoken_text"] for l in out["losers"]] == ["new fail", "old fail"]       # newest first, running one left out
+    assert hook_outcomes([won, other], S)["winners"][1]["spoken_text"] == "tamil words"  # all languages when none is named
+    assert len(hook_outcomes([won] * 9, S, "Hindi", limit=3)["winners"]) == 3
 
 
 def test_proven_hooks_only_get_bodies_they_have_not_had():
     bodies = [DEFAULT_BODY, "teal-darkmint-mintbox", "plum-darkcoral-coralbox"]
-    win = adset(id="9", spend=3000, results=60, job_id="j1", hook=("hi", "the hook"))
-    used = {("hi", "the hook", None), ("hi", "the hook", "teal-darkmint-mintbox")}                # None = default body
+    win = adset(id="9", spend=3000, results=60, job_id="j1", hook=("hi", "the hook", "the hook"))
+    used = {("hi", "the hook", "the hook", None), ("hi", "the hook", "the hook", "teal-darkmint-mintbox")}                # None = default body
     plan = build_plan(inputs([win], bodies={"hi": bodies}, used=used), S)
     hindi = next(c for c in plan["campaigns"] if c["language"] == "Hindi")
-    assert hindi["proven_hook_ads"] == [{"hook_job_id": "j1", "hook_text": "the hook", "results": 60, "cpr_inr": 50.0,
+    assert hindi["proven_hook_ads"] == [{"hook_job_id": "j1", "spoken_text": "the hook", "thumbnail_text": "the hook", "results": 60, "cpr_inr": 50.0,
                                          "bodies": ["plum-darkcoral-coralbox"]}]
     assert hindi["new_ads"] == hindi["new_hook_ads"] + 1
     assert sum(c["new_ads"] for c in plan["campaigns"]) == plan["new_ads_total"]
 
 
 def test_a_winner_paused_later_for_fatigue_is_still_a_winner():
-    tired = adset(id="9", active=False, spend=9000, results=60, job_id="j1", hook=("hi", "h"))        # cpr 150 when paused
+    tired = adset(id="9", active=False, spend=9000, results=60, job_id="j1", hook=("hi", "h", "h"))        # cpr 150 when paused
     early_loser = adset(id="8", active=False, spend=300, results=3)                                     # paused before 50
     plan = build_plan(inputs([tired, early_loser], bodies={"hi": ["x"]}), S)
     hindi = next(c for c in plan["campaigns"] if c["language"] == "Hindi")
@@ -218,7 +287,7 @@ def hook_history(*outcomes: str) -> list[AdSet]:
     """One hook's ad sets oldest first: W = won (60 results), L = paused before 50, U = still running below 50."""
     spec = {"W": dict(active=False, spend=3000, results=60), "L": dict(active=False, spend=200, results=1),
             "U": dict(active=True, spend=100, results=5)}
-    return [adset(id=str(i), made=float(i), job_id=f"j{i}", hook=("hi", "h"), **spec[o]) for i, o in enumerate(outcomes)]
+    return [adset(id=str(i), made=float(i), job_id=f"j{i}", hook=("hi", "h", "h"), **spec[o]) for i, o in enumerate(outcomes)]
 
 
 @pytest.mark.parametrize("outcomes,retired", [
@@ -234,7 +303,7 @@ def test_a_hook_is_retired_after_three_failed_remixes_in_a_row(outcomes, retired
 
 
 def test_a_language_with_a_proven_hook_gets_a_bigger_share():
-    win = adset(id="9", spend=3000, results=60, job_id="j1", hook=("hi", "h"))
+    win = adset(id="9", spend=3000, results=60, job_id="j1", hook=("hi", "h", "h"))
     plan = build_plan(inputs([win], bodies={"hi": ["x", "y"]}), S)
     by = {c["language"]: c["new_ads"] for c in plan["campaigns"]}
     assert by["Hindi"] > by["Tamil"] and by["Hindi"] + by["Tamil"] == plan["new_ads_total"]
@@ -278,26 +347,28 @@ def test_planner_reads_three_times_and_links_ad_sets_to_their_hooks(tmp_path):
         (tmp_path / "hi" / f"{stem}.mp4").touch()
     cfg = settings(tmp_path)
     store = JobStore(tmp_path / "jobs.db")
-    _, (job_id,) = store.create_batch([{"language": "hi", "text": "winning hook", "body": None}])
+    _, (job_id,) = store.create_batch([{"language": "hi", "spoken_text": "winning hook", "thumbnail_text": "winning hook", "body": None}])
     store.upsert_meta_upload(job_id, adset_id="10")
     fake = FakeMeta()
-    client = GraphClient("tok", "v25.0", transport=httpx.MockTransport(fake), sleep=lambda x: None, backoff=0)
+    client = GraphClient.from_settings("tok", load_settings(), transport=httpx.MockTransport(fake), sleep=lambda x: None, backoff=0)
 
     plan = Planner(cfg, client, "111", {"c-hi": "Hindi", "c-ta": "Tamil"}, store, clock=lambda: NOW).run()
 
     assert len(fake.reads) == 3
+    assert any(r.get("action_attribution_windows") == '["7d_click"]' for r in fake.reads)     # daily results: same click window
+    assert any('action_attribution_windows(["7d_click"])' in r.get("fields", "") for r in fake.reads)
     assert all(json.loads(r["filtering"])[0]["value"] == ["c-hi", "c-ta"] for r in fake.reads if "insights" in r["path"])
     assert plan["spent_this_month_inr"] == 5000 and plan["budget_left_inr"] == 195000     # c-other is not counted
     hindi = next(c for c in plan["campaigns"] if c["language"] == "Hindi")
     assert hindi["proven_hooks_known"] == 1
-    assert hindi["proven_hook_ads"] == [{"hook_job_id": job_id, "hook_text": "winning hook", "results": 60,
+    assert hindi["proven_hook_ads"] == [{"hook_job_id": job_id, "spoken_text": "winning hook", "thumbnail_text": "winning hook", "results": 60,
                                          "cpr_inr": 50.0, "bodies": ["teal-darkmint-mintbox"]}]    # default body is taken
     assert plan["scaling_winners"][0]["adset"] == "Hindi winner"
 
 
 def test_planner_refuses_before_any_call_when_the_budget_is_unset(tmp_path):
     fake = FakeMeta()
-    client = GraphClient("tok", "v25.0", transport=httpx.MockTransport(fake), sleep=lambda x: None, backoff=0)
+    client = GraphClient.from_settings("tok", load_settings(), transport=httpx.MockTransport(fake), sleep=lambda x: None, backoff=0)
     with pytest.raises(PlanningError):
         Planner(settings(tmp_path, monthly_budget_inr=0), client, "111", {"c-hi": "Hindi"}, JobStore(tmp_path / "j.db")).run()
     assert fake.reads == []
