@@ -5,7 +5,7 @@ icons. Build a message with `blocks(headline(...), entry(...), ...)`."""
 from __future__ import annotations
 
 OK, WARN, FAIL, WAIT = "✅", "⚠️", "❌", "⏳"
-PAUSED, RAISED, IMAGE, VIDEO, PLAN = "⏸", "📈", "🖼", "🎬", "📋"
+PAUSED, RAISED, IMAGE, VIDEO, PLAN, CLEAN = "⏸", "📈", "🖼", "🎬", "📋", "🧹"
 
 
 def headline(icon: str, text: str) -> str:

@@ -348,12 +348,45 @@ class Planner:
         managed = json.dumps([{"field": "campaign.id", "operator": "IN", "value": list(self.campaigns)}])
         return get_all(self.client, f"act_{self.account_id}/insights", filtering=managed, **params)
 
+    def _adset_fields(self) -> str:
+        rules = self.s.autopause
+        return (f"id,name,campaign_id,effective_status,daily_budget,"
+                f"{insights_field(self.s, f'spend,{rules.metric_field}')}")
+
+    def _adset(self, language: str, row: dict, insight: dict, job: dict | None, last_raise: float | None,
+               recent_spend: float | None = None, recent_results: float = 0.0, spend_today: float = 0.0) -> AdSet:
+        """An ad set from its Meta row, its lifetime insight and the job behind it; the delivery of the last days is
+        only known to `collect`."""
+        rules = self.s.autopause
+        return AdSet(
+            id=str(row["id"]), name=row.get("name", ""), language=language, active=row.get("effective_status") == "ACTIVE",
+            daily_budget=int(row["daily_budget"]) if str(row.get("daily_budget") or "").isdigit() else None,
+            spend=float(insight.get("spend") or 0),
+            results=sum_action(insight.get(rules.metric_field), rules.result_action_type),
+            recent_spend=recent_spend, recent_results=recent_results, spend_today=spend_today, last_raise=last_raise,
+            job_id=job["job_id"] if job else None, hook=(job["language"], job["spoken_text"], job["thumbnail_text"]) if job else None,
+            made=job["created"] if job else 0.0, ad_format=job["ad_format"] if job else None,
+            body=job["body"] if job else None)
+
+    def reusable_hook_jobs(self) -> set[str]:
+        """Jobs whose work folder must be kept: every winning job of a hook that is still reusable (not retired). A new
+        ad on a proven hook is a redo of one of them and reuses its image, clip, words and poster plan. One Meta read
+        (the ad sets with their lifetime results); nothing else of `collect` is needed."""
+        jobs = {j["adset_id"]: j for j in self.store.uploaded_jobs()}
+        adsets = [self._adset(language, row, insight, jobs.get(str(row["id"])), None)
+                  for language, row, insight in managed_rows(
+                      fetch_adsets(self.client, self.account_id, self._adset_fields(), ADSET_STATUSES), self.campaigns)]
+        keep: set[str] = set()
+        for language in set(self.campaigns.values()):
+            reusable_hooks = {a.hook for a in proven_hooks(adsets, language, self.s)[0]}
+            keep |= {a.job_id for a in adsets if a.language == language and a.hook in reusable_hooks and a.job_id
+                     and is_win(a, self.s)}
+        return keep
+
     def collect(self, now: datetime) -> Inputs:
-        rules, cfg = self.s.autopause, self.s.ad_planning
-        adset_fields = (f"id,name,campaign_id,effective_status,daily_budget,"
-                        f"{insights_field(self.s, f'spend,{rules.metric_field}')}")
+        rules = self.s.autopause
         today = now.astimezone(IST).date()
-        window = {"since": (today - timedelta(days=cfg.trend_days)).isoformat(), "until": today.isoformat()}
+        window = {"since": (today - timedelta(days=self.s.ad_planning.trend_days)).isoformat(), "until": today.isoformat()}
         daily: dict[str, list[dict]] = {}
         for r in self._insights(level="adset", time_increment="1", time_range=json.dumps(window),
                                 fields=f"adset_id,spend,{rules.metric_field}",
@@ -364,24 +397,17 @@ class Planner:
         last_raise = self.store.last_budget_increases()
 
         adsets = []
-        rows = fetch_adsets(self.client, self.account_id, adset_fields, ADSET_STATUSES)
+        rows = fetch_adsets(self.client, self.account_id, self._adset_fields(), ADSET_STATUSES)
         for language, row, insight in managed_rows(rows, self.campaigns):
             adset_id = str(row["id"])
             full = [r for r in daily.get(adset_id, []) if r["date_start"] < today.isoformat()]
             spend_today = sum(float(r.get("spend") or 0) for r in daily.get(adset_id, []) if r["date_start"] == today.isoformat())
-            job = jobs.get(adset_id)
-            adsets.append(AdSet(
-                id=adset_id, name=row.get("name", ""), language=language, active=row.get("effective_status") == "ACTIVE",
-                daily_budget=int(row["daily_budget"]) if str(row.get("daily_budget") or "").isdigit() else None,
-                spend=float(insight.get("spend") or 0),
-                results=sum_action(insight.get(rules.metric_field), rules.result_action_type),
+            adsets.append(self._adset(
+                language, row, insight, jobs.get(adset_id), last_raise.get(adset_id),
                 recent_spend=sum(float(r.get("spend") or 0) for r in full) / len(full) if full else None,
                 recent_results=sum(sum_action(r.get(rules.metric_field), rules.result_action_type) for r in full) / len(full)
                 if full else 0.0,
-                spend_today=spend_today, last_raise=last_raise.get(adset_id),
-                job_id=job["job_id"] if job else None, hook=(job["language"], job["spoken_text"], job["thumbnail_text"]) if job else None,
-                made=job["created"] if job else 0.0, ad_format=job["ad_format"] if job else None,
-                body=job["body"] if job else None))
+                spend_today=spend_today))
         return Inputs(now=now, languages=sorted(set(self.campaigns.values())), spent_mtd=sum(float(r.get("spend") or 0) for r in month), adsets=adsets,
                       used_pairs=self.store.hook_body_pairs(),
                       bodies={code: available_bodies(self.s, code) for code in self.s.languages},

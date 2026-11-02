@@ -34,6 +34,8 @@ schedules:                     # when the recurring jobs run: the installers (sc
   autopause_every_hours: 2     # metaads.autopause; must divide 24, it runs on those hours of the server clock (UTC)
   budget_increase_hour_ist: 5  # metaads.budget, once a day at this hour IST
   daily_plan_ist: "12:00"      # the Hermes cron job that plans the next launch's ads (HH:MM IST)
+  orphan_data_cleanup_hour_ist: 3   # metaads.orphan_data, once a day
+  old_data_cleanup_hour_ist: 4      # metaads.old_data, once a day (reads Meta once)
 
 default_body: navy-darkyellow-yellowbox
 
@@ -174,6 +176,13 @@ budget_increase:               # metaads.budget, runs as set in schedules (scrip
   min_results_first_increase: 50   # an ad set never raised before needs this many results (learning phase over)
   max_daily_budget: 500000     # paise (Rs 5,000): a budget is never raised above this
 
+orphan_data:                   # metaads.orphan_data, runs as set in schedules (scripts/install_orphan_data_cleanup_timer.sh): deletes files and folders no ad points to
+  min_age_hours: 24            # a file/folder is only deleted once nothing in it changed for this long (a job may still be writing it)
+
+old_data:                      # metaads.old_data, runs as set in schedules (scripts/install_old_data_cleanup_timer.sh): deletes the files of ads that are done with
+  uploaded_keep_days: 2        # an ad uploaded to Meta (or whose upload failed) loses its files this many days after the upload; the work folder of a winning ad whose hook is not retired stays (ad_planning.retire_hook_after_failures)
+  discarded_keep_days: 2       # an ad you dropped or redid, or that failed, loses its files this many days after that; a redo plan you never answered protects its ad for this long
+
 ad_planning:                   # metaads.planning: how many new ads the rest of the month can afford. Amounts here are Rs, not paise
   monthly_budget_inr: 200000   # Rs 2,00,000 for all managed campaigns together; a new ad set's daily budget is meta.daily_budget
   performing_min_results: 50   # an ad set that reached this many results is a winner (autopause did not stop it on the way), and its hook is proven; a later pause does not undo that
@@ -205,3 +214,4 @@ messages:                      # how much of a text goes into a Telegram message
   tool_text_chars: 100         # a text in the answer of list_ads
   ad_label_chars: 80           # an ad's name in a redo plan
   hook_label_chars: 30         # a hook's name in a plan error
+  cleanup_names_shown: 5       # file names listed per group in a cleanup report

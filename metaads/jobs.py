@@ -44,6 +44,7 @@ META_FIELDS = {"upload_id", "status", "stage", "error", "video_id", "image_hash"
 REVIEW_PENDING, REVIEW_APPROVED, REVIEW_DROPPED, REVIEW_REDONE = "pending", "approved", "dropped", "redone"
 # The daily ad plan the owner is asked to approve before any ad is made.
 PLAN_PENDING, PLAN_APPROVED, PLAN_REJECTED, PLAN_SUPERSEDED = "pending", "approved", "rejected", "superseded"
+REDO_PENDING = "pending"                                             # a redo plan the owner has not answered yet
 REVIEW_STATES = {REVIEW_PENDING, REVIEW_APPROVED, REVIEW_DROPPED, REVIEW_REDONE}
 JOB_FIELDS = {"status", "stage", "error", "hook_path", "ad_path", "attempts", "duration", "body", "estimate", "owner",
               "ad_format", "fallback_reason"}
@@ -145,7 +146,14 @@ class JobStore:
     # ---- redo plans: a plan is proposed first and only runs after the owner approves it
     def create_redo_plan(self, plan_id: str, job_id: str, args: str) -> None:
         with closing(self._conn()) as c, c:
-            c.execute("INSERT INTO redo_plans VALUES (?,?,?,?,?)", (plan_id, job_id, args, "pending", time.time()))
+            c.execute("INSERT INTO redo_plans VALUES (?,?,?,?,?)", (plan_id, job_id, args, REDO_PENDING, time.time()))
+
+    def pending_redo_job_ids(self, since: float) -> set[str]:
+        """Ads with a redo plan still waiting for the owner's answer that was proposed at `since` or later."""
+        with closing(self._conn()) as c:
+            rows = c.execute("SELECT DISTINCT job_id FROM redo_plans WHERE status=? AND created>=?",
+                             (REDO_PENDING, since)).fetchall()
+        return {r["job_id"] for r in rows}
 
     def get_redo_plan(self, plan_id: str) -> dict[str, Any] | None:
         with closing(self._conn()) as c:
@@ -214,6 +222,14 @@ class JobStore:
         with closing(self._conn()) as c:
             row = c.execute("SELECT * FROM meta_uploads WHERE job_id=?", (job_id,)).fetchone()
         return dict(row) if row else None
+
+    def cleanup_jobs(self) -> list[dict[str, Any]]:
+        """Every job with the state of its Meta upload (upload_status, upload_updated, ad_id: None without an upload):
+        what the cleanup jobs need to know which files are still wanted."""
+        with closing(self._conn()) as c:
+            rows = c.execute("SELECT j.*, u.status AS upload_status, u.updated AS upload_updated, u.ad_id AS ad_id "
+                             "FROM jobs j LEFT JOIN meta_uploads u ON u.job_id = j.id ORDER BY j.created, j.idx").fetchall()
+        return [dict(r) for r in rows]
 
     def meta_uploads_for(self, upload_id: str) -> list[dict[str, Any]]:
         with closing(self._conn()) as c:

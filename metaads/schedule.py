@@ -3,6 +3,8 @@ that register them, so the two cannot drift apart.
 
   python -m metaads.schedule autopause-hours   -> 2          (systemd: OnCalendar=*-*-* 00/<hours>:00:00)
   python -m metaads.schedule budget-hour       -> 5          (systemd: OnCalendar=*-*-* 05:00:00 Asia/Kolkata)
+  python -m metaads.schedule orphan-data-hour  -> 3          (the same, for metaads.orphan_data)
+  python -m metaads.schedule old-data-hour     -> 4          (the same, for metaads.old_data)
   python -m metaads.schedule plan-cron         -> 30 6 * * * (Hermes cron, whose clock is UTC)
 """
 from __future__ import annotations
@@ -23,11 +25,16 @@ def autopause_every(s: Settings) -> timedelta:
     return timedelta(hours=hours)
 
 
-def budget_increase_hour(s: Settings) -> int:
-    hour = int(s.schedules.budget_increase_hour_ist)
+def daily_hour_ist(s: Settings, key: str) -> int:
+    """The hour (IST) a once-a-day job runs, from schedules.<key>."""
+    hour = int(s.schedules[key])
     if not 0 <= hour < HOURS_PER_DAY:
-        raise ValueError(f"schedules.budget_increase_hour_ist must be 0-23, got {hour}")
+        raise ValueError(f"schedules.{key} must be 0-23, got {hour}")
     return hour
+
+
+def budget_increase_hour(s: Settings) -> int:
+    return daily_hour_ist(s, "budget_increase_hour_ist")
 
 
 def plan_cron_utc(s: Settings) -> str:
@@ -40,7 +47,9 @@ def plan_cron_utc(s: Settings) -> str:
 def main(argv: list[str]) -> int:
     s = load_settings()
     answers = {"autopause-hours": lambda: int(autopause_every(s).total_seconds() // 3600),
-               "budget-hour": lambda: budget_increase_hour(s), "plan-cron": lambda: plan_cron_utc(s)}
+               "budget-hour": lambda: budget_increase_hour(s), "plan-cron": lambda: plan_cron_utc(s),
+               "orphan-data-hour": lambda: daily_hour_ist(s, "orphan_data_cleanup_hour_ist"),
+               "old-data-hour": lambda: daily_hour_ist(s, "old_data_cleanup_hour_ist")}
     if len(argv) != 1 or argv[0] not in answers:
         print(f"usage: python -m metaads.schedule {{{'|'.join(answers)}}}", file=sys.stderr)
         return 2

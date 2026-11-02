@@ -48,6 +48,16 @@ def test_the_autopause_interval_must_divide_a_day_and_the_budget_hour_must_be_an
         schedule.budget_increase_hour(changed(schedules={"budget_increase_hour_ist": 24}))
 
 
+def test_the_cleanup_hours_come_from_the_settings(capsys):
+    assert schedule.daily_hour_ist(BASE, "orphan_data_cleanup_hour_ist") == 3
+    assert schedule.daily_hour_ist(BASE, "old_data_cleanup_hour_ist") == 4
+    assert schedule.daily_hour_ist(changed(schedules={"old_data_cleanup_hour_ist": 22}), "old_data_cleanup_hour_ist") == 22
+    with pytest.raises(ValueError, match="schedules.orphan_data_cleanup_hour_ist must be 0-23"):
+        schedule.daily_hour_ist(changed(schedules={"orphan_data_cleanup_hour_ist": 24}), "orphan_data_cleanup_hour_ist")
+    for answer, hour in (("orphan-data-hour", 3), ("old-data-hour", 4), ("budget-hour", 5)):     # what the installers ask for
+        assert schedule.main([answer]) == 0 and capsys.readouterr().out.strip() == str(hour)
+
+
 def test_the_start_hour_comes_from_the_settings():
     now = datetime(2026, 11, 1, 8, 0, tzinfo=IST)
     assert default_start_time(now, 6) == "2026-11-02T06:00:00+05:30"
