@@ -5,8 +5,9 @@ description: Make ad videos from a language and hook text (reporter hook + poste
 
 # Ad creation
 
-Making new ads is fully automatic: no approval needed. Redoing a finished ad is the `ad-redo` skill and putting ads
-on Meta is the `meta-upload` skill.
+Making new ads is fully automatic: no approval needed. But the finished ads are not uploaded until the owner approves
+them: after `create_ads`, continue with the `ad-review` skill. Redoing a finished ad is the `ad-redo` skill and putting
+ads on Meta is the `meta-upload` skill.
 
 ## What the tools do
 `create_ads` runs the whole chain for each ad: a reporter image, a talking-reporter video (Veo), the poster demo shown
@@ -31,7 +32,8 @@ ask. Otherwise just go.
 ## Steps
 1. Build `items` (one per ad). Keep the text exactly as written.
 2. Call `create_ads(items=[...])`.
-3. If it returns `started: true`: reply with one short line naming how many ads and which languages.
+3. If it returns `started: true`: reply with one short line naming how many ads and which languages (and that you will
+   ask for approval when they are ready, see `ad-review`).
 4. If `started: false`: pass on the `error` and what to change.
 5. Stop. The ads and a final "N of N ads created" summary arrive in the chat on their own.
    When the owner asks for progress, call `get_batch_status(batch_id)` and summarise it.

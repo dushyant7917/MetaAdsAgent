@@ -140,3 +140,19 @@ def test_details_tell_the_bot_what_the_ad_is_made_of(env):
     d = rp.details(job)
     assert d["language"] == "hi" and d["stored_stages"] == ["image", "video", "transcribe", "plan", "render_hook", "merge"]
     assert d["poster"]["to"] > d["poster"]["from"] and d["spoken_words"] and "voice_may_be_cut_off" in d
+
+
+def test_a_redo_replaces_the_waiting_ad_and_waits_itself(env):
+    _, p, _, job, rp = _made(env)
+    assert p.store.get_job(job)["review"] == "pending"
+    _, done = _run(p, rp, job, ["body"], new_body="teal")
+    assert p.store.get_job(job)["review"] == "redone"
+    assert p.store.get_job(done["job_id"])["review"] == "pending"
+
+
+def test_redoing_an_ad_that_was_not_waiting_leaves_its_state_alone(env):
+    _, p, _, job, rp = _made(env)
+    p.store.set_review([job], "approved")
+    _, done = _run(p, rp, job, ["body"], new_body="teal")
+    assert p.store.get_job(job)["review"] == "approved"
+    assert p.store.get_job(done["job_id"])["review"] == "pending"

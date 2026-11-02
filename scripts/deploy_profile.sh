@@ -18,6 +18,10 @@ hermes -p "$PROFILE" config set model.provider gemini
 hermes -p "$PROFILE" config set model.default "$GEMINI_MODEL"
 hermes -p "$PROFILE" config set model.base_url https://generativelanguage.googleapis.com/v1beta
 
+# Hermes reviews each long turn in the background and may patch its own skills; its "Self-improvement review" notice
+# lands in the owner's chat and is noise there, so it is off (the review itself still runs).
+hermes -p "$PROFILE" config set display.memory_notifications off
+
 # Role and skills from the repo: every folder in hermes/skills/ becomes a skill of the profile.
 install -m 600 "$REPO/hermes/SOUL.md" "$PROFILE_HOME/SOUL.md"
 for dir in "$REPO"/hermes/skills/*/; do

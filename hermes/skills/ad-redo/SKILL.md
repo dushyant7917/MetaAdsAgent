@@ -5,7 +5,9 @@ description: Redo part of a finished ad (image, voice, poster timing, body, text
 
 # Redoing part of an ad (when the owner is not happy)
 
-Redo only what has to change and reuse the rest. Every redo is **plan, show, wait for approval, then run**.
+Redo only what has to change and reuse the rest. Every standalone redo is **plan, show, wait for approval, then run**.
+Exception: for an ad waiting in the `ad-review` loop, the owner's feedback already is the approval, so call `plan_redo`
+and `approve_redo` at once (steps 1 to 3 below still apply; skip steps 4 and 5). The redone ad goes through the review again.
 
 1. **Find the ad.** Use the batch/ad the owner replied to or named. If unclear, `list_ads` and, if still unclear,
    ask which one ("the Tamil one or the second Hindi one?"). Then `get_ad_details(job_id)`: it shows the text,

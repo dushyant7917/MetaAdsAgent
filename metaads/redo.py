@@ -20,6 +20,7 @@ from typing import Any
 
 from . import media
 from .durations import DurationEstimateError
+from .jobs import REVIEW_PENDING, REVIEW_REDONE
 from .media import PosterWindow
 from .pipeline import Pipeline, ValidationError
 
@@ -199,7 +200,7 @@ class RedoPlanner:
         try:
             item = {"language": job["language"], "text": a["new_text"] or job["text"],
                     "body": a["new_body"] or job["body"], "duration": a["duration"] or job["duration"],
-                    "estimate": job["estimate"], "redo_of": job["id"]}
+                    "estimate": job["estimate"], "redo_of": job["id"], "review": REVIEW_PENDING}
             if a["new_text"] and a["duration"] is None:
                 try:
                     pick = self.p.services.durations([{"language": item["language"], "text": item["text"]}])[0]
@@ -212,6 +213,8 @@ class RedoPlanner:
                 item["plan_hint"] = self._hint(job["id"], a["poster_feedback"])
             chat_id = self.p.store.batch_chat_id(job["batch_id"])
             batch_id, [new_id] = self.p.store.create_batch([item], chat_id, self.p.owner)
+            if job["review"] == REVIEW_PENDING:                          # the old ad is replaced, not waiting any more
+                self.p.store.set_review([job["id"]], REVIEW_REDONE)
             self._seed(job["id"], new_id, start, a)
         except Exception:
             self.p.store.set_redo_plan_status(plan_id, "approved", "pending")   # nothing ran; the plan stays usable

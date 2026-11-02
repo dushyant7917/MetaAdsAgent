@@ -20,7 +20,7 @@ from typing import Any, Callable
 from . import media
 from .adaccount import campaign_env_var
 from .config import Settings, _resolve_path
-from .jobs import JobStore
+from .jobs import REVIEW_APPROVED, JobStore
 from .locks import CPU_LOCK
 from .meta import (GraphClient, GraphError, ad_name, ad_op, ad_set_name, adset_op, build_adset_fields,
                    build_creative, build_targeting, default_start_time, parse_start_time, resolve_region_keys)
@@ -137,6 +137,7 @@ class MetaUploader:
             self._active.update(j["id"] for j in todo)
         for j in todo:
             self.store.upsert_meta_upload(j["id"], upload_id=upload_id, status="queued", stage="queued", error=None)
+        self.store.set_review([j["id"] for j in todo], REVIEW_APPROVED)      # asking for the upload is the approval
         args = (upload_id, todo, env, chat_id, start_time)
         if background:
             threading.Thread(target=self._run, args=args, daemon=True, name=f"metaads-meta-{upload_id}").start()

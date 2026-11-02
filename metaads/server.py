@@ -19,6 +19,7 @@ from . import media
 from .adaccount import make_client, managed_account
 from .bodies import available_bodies
 from .config import load_env_file, load_settings
+from .jobs import REVIEW_DROPPED
 from .notify import TelegramNotifier
 from .pipeline import Pipeline, ValidationError
 from .planning import Planner
@@ -70,7 +71,7 @@ async def _blocking(fn, *args, **kwargs):
 # ---------------- main entry points ----------------
 
 @mcp.tool()
-def create_ads(items: list[dict[str, Any]], chat_id: str | None = None) -> dict:
+def create_ads(items: list[dict[str, Any]], chat_id: str | None = None, review: bool = True) -> dict:
     """Create one complete ad (hook + body, cross-faded) for EACH item, in the background.
 
     items: list of {language, text, body?, duration?}.
@@ -78,12 +79,15 @@ def create_ads(items: list[dict[str, Any]], chat_id: str | None = None) -> dict:
       text: the hook text the reporter speaks (as the user wrote it).
       body: optional body video name or unique part of it (e.g. "teal"); default navy-darkyellow-yellowbox.
       duration: optional clip length 4, 6 or 8 seconds; by default chosen from text length and language.
+    review: True (default) = the finished ads wait for the owner to approve, drop or give feedback before anything
+      goes to Meta (the summary on Telegram asks them to; follow the ad-review skill). False only when the owner
+      says to just make the ads and not upload them.
     Returns immediately with a batch_id. Each finished ad is sent to Telegram on its own, and a summary
     follows at the end. Use get_batch_status to check progress. The whole request is refused up front
     (nothing runs) if any item is invalid or a limit would be exceeded.
     """
     try:
-        batch_id = pipeline().submit(items, chat_id=chat_id)
+        batch_id = pipeline().submit(items, chat_id=chat_id, review=review)
     except ValidationError as exc:
         return {"started": False, "error": str(exc)}
     return {"started": True, "batch_id": batch_id, "ads": len(items),
@@ -100,15 +104,18 @@ def get_batch_status(batch_id: str) -> dict:
 
 
 @mcp.tool()
-def list_ads(limit: int = 10) -> dict:
-    """Recent ads, newest first: job_id, language, text, status, file paths and whether the ad is on Meta
-    (meta_status, meta_ad_id). Use it to find which ad the owner means."""
+def list_ads(limit: int = 10, awaiting_review: bool = False) -> dict:
+    """Recent ads, newest first: job_id, language, text, status, file paths, the owner's decision (`review`:
+    pending, approved, dropped, redone or none) and whether the ad is on Meta (meta_status, meta_ad_id).
+    Use it to find which ad the owner means. awaiting_review=True lists only the ads still waiting for the owner's
+    decision (review pending, including ones still being made), oldest first; `limit` is ignored then."""
     store = pipeline().store
     ads = []
-    for j in store.recent_jobs(max(1, min(limit, 30))):
+    jobs = store.awaiting_review_jobs() if awaiting_review else store.recent_jobs(max(1, min(limit, 30)))
+    for j in jobs:
         meta = store.get_meta_upload(j["id"]) or {}
         ads.append({"job_id": j["id"], "language": j["language"], "text": j["text"][:100], "status": j["status"],
-                    "body": j["body"], "ad_path": j["ad_path"], "redo_of": j["redo_of"],
+                    "body": j["body"], "ad_path": j["ad_path"], "redo_of": j["redo_of"], "review": j["review"],
                     "meta_status": meta.get("status"), "meta_ad_id": meta.get("ad_id")})
     return {"ads": ads}
 
@@ -117,7 +124,7 @@ def list_ads(limit: int = 10) -> dict:
 def upload_ads(job_ids: list[str] | None = None, batch_id: str | None = None, chat_id: str | None = None,
                dry_run: bool = False, start_time: str | None = None) -> dict:
     """Upload finished ads to Meta: a new ACTIVE ad set (own budget, the language's states) and ad for EACH ad,
-    in the language's campaign. Spends money, so call it only when the owner asks to upload.
+    in the language's campaign. Spends money, so call it only when the owner approved these ads (or asked to upload them).
 
     Give job_ids (from list_ads / get_batch_status) OR a batch_id to upload every finished ad of that batch.
     Returns at once with an upload_id; the result (ad set and ad ids, or the reason it failed) arrives in the chat.
@@ -132,6 +139,20 @@ def upload_ads(job_ids: list[str] | None = None, batch_id: str | None = None, ch
                                 start_time=start_time)
     except ValidationError as exc:
         return {"started": False, "error": str(exc)}
+
+
+@mcp.tool()
+def drop_ads(job_ids: list[str]) -> dict:
+    """Drop ads the owner explicitly said to drop (delete, discard): they will not be uploaded or asked about again.
+    Never use it for an ad the owner only criticised without saying drop. Spends nothing and deletes no files."""
+    store = pipeline().store
+    ids = list(dict.fromkeys(job_ids))
+    waiting = {j["id"] for j in store.awaiting_review_jobs()}
+    unknown = [j for j in ids if j not in waiting]
+    if unknown:
+        return {"dropped": [], "error": f"Not waiting for a decision: {', '.join(unknown)}. Check list_ads."}
+    store.set_review(ids, REVIEW_DROPPED)
+    return {"dropped": ids}
 
 
 @mcp.tool()

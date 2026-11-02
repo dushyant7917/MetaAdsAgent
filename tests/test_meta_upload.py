@@ -188,6 +188,23 @@ def test_dry_run_sends_nothing(env):
     assert store.get_meta_upload(jobs[0]) is None
 
 
+def test_asking_for_the_upload_approves_the_ads_but_a_dry_run_does_not(env):
+    up, store, fake, jobs, batch_id, _ = env
+    store.set_review(jobs, "pending")
+    up.submit(job_ids=[jobs[0]], dry_run=True)
+    assert store.get_job(jobs[0])["review"] == "pending"
+    up.submit(job_ids=[jobs[0]], background=False)
+    assert [store.get_job(j)["review"] for j in jobs] == ["approved", "pending", "pending"]
+
+
+def test_a_refused_upload_approves_nothing(env):
+    up, store, fake, jobs, batch_id, _ = env
+    store.set_review(jobs, "pending")
+    with pytest.raises(ValidationError):
+        up.submit(job_ids=[jobs[0], "nope"])
+    assert {store.get_job(j)["review"] for j in jobs} == {"pending"}
+
+
 def test_rate_limit_is_waited_out_and_retried():
     waits, n = [], {"n": 0}
 

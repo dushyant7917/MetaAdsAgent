@@ -5,8 +5,9 @@ description: Upload finished ads to Meta (ad sets and ads). Use when the owner a
 
 # Uploading ads to Meta
 
-Only when the owner asks ("upload these", "put the Tamil one on Meta"). It creates ACTIVE ad sets that start
-spending, so never do it on your own after creating ads.
+Only for ads the owner approved in the `ad-review` loop, or when the owner asks directly ("upload these", "put the
+Tamil one on Meta"). It creates ACTIVE ad sets that start spending, so never do it on your own after creating ads.
+`upload_ads` marks the ads approved, so they stop waiting for review.
 
 1. Find the ads: the batch the owner replied to or named (`batch_id`), or specific ads via `list_ads` (`job_ids`).
    Every ad's caption ends with `id <job_id>`: when the owner replies to an ad, use that id as the `job_id`.

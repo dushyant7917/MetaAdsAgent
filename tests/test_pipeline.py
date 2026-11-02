@@ -8,7 +8,7 @@ import pytest
 from metaads import media
 from metaads.config import Settings, load_settings
 from metaads.jobs import JobStore
-from metaads.pipeline import Pipeline, Services, ValidationError
+from metaads.pipeline import REVIEW_PROMPT, Pipeline, Services, ValidationError
 from metaads.durations import DurationEstimateError
 from metaads.planner import plan_poster_window
 from metaads.videogen import VideoBlockedError
@@ -294,3 +294,36 @@ def test_an_old_database_gets_the_owner_column(tmp_path):
     JobStore(db)
     with sqlite3.connect(db) as c:
         assert "owner" in {r[1] for r in c.execute("PRAGMA table_info(jobs)")}
+
+
+def test_new_ads_wait_for_the_owner_and_the_summary_asks_for_a_decision(env):
+    fakes = Fakes(block_text="BOOM")
+    p, rec = _pipeline(env, fakes)
+    batch = p.submit([{"language": "hi", "text": "ok one"}, {"language": "hi", "text": "BOOM two"}], background=False)
+    waiting = p.store.awaiting_review_jobs()
+    assert [j["id"] for j in waiting] == [f"{batch}-1"]               # the failed ad is not waiting for a decision
+    assert rec.texts[-1].endswith(REVIEW_PROMPT)
+
+
+def test_without_review_nothing_waits_and_nobody_is_asked(env):
+    p, rec = _pipeline(env, Fakes())
+    p.submit([{"language": "hi", "text": "ok one"}], background=False, review=False)
+    assert p.store.awaiting_review_jobs() == [] and REVIEW_PROMPT not in rec.texts[-1]
+
+
+def test_a_summary_with_only_failures_does_not_ask_for_a_decision(env):
+    p, rec = _pipeline(env, Fakes(block_text="BOOM"))
+    p.submit([{"language": "hi", "text": "BOOM one"}], background=False)
+    assert REVIEW_PROMPT not in rec.texts[-1]
+
+
+def test_set_review_stamps_the_decision_time_and_rejects_unknown_states(env):
+    p, _ = _pipeline(env, Fakes())
+    batch = p.submit([{"language": "hi", "text": "ok one"}], background=False)
+    job = f"{batch}-1"
+    assert p.store.get_job(job)["reviewed"] is None
+    p.store.set_review([job], "dropped")
+    row = p.store.get_job(job)
+    assert row["review"] == "dropped" and row["reviewed"] and p.store.awaiting_review_jobs() == []
+    with pytest.raises(ValueError):
+        p.store.set_review([job], "maybe")

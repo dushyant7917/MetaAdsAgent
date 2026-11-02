@@ -27,4 +27,5 @@ Answer from its numbers only, never from your own estimate:
 
 Do not create anything because of this answer. If the owner then says to go ahead:
 - `new_hook_ads`: ask for the hook texts, then follow the `ad-creation` skill.
-- `proven_hook_ads`: follow the `ad-redo` skill with `new_body` for each; it plans first and waits for approval.
+- `proven_hook_ads`: follow the `ad-redo` skill with `new_body` for each; it plans first and waits for approval. The new
+  ads then wait for the owner's decision like any other (`ad-review`).

@@ -12,11 +12,13 @@ if [ "${1:-}" != "--force" ] && [ -f "$REPO/data/metaads.db" ]; then
   busy="$(python3 - "$REPO/data/metaads.db" <<'PY'
 import sqlite3, sys
 c = sqlite3.connect(sys.argv[1])
-jobs = c.execute("SELECT COUNT(*) FROM jobs WHERE status IN ('queued','running')").fetchone()[0]
-try:
-    ups = c.execute("SELECT COUNT(*) FROM meta_uploads WHERE status IN ('queued','running')").fetchone()[0]
-except sqlite3.OperationalError:          # table not created yet
-    ups = 0
+def count(sql):
+    try:
+        return c.execute(sql).fetchone()[0]
+    except sqlite3.OperationalError:          # table not created yet (fresh database)
+        return 0
+jobs = count("SELECT COUNT(*) FROM jobs WHERE status IN ('queued','running')")
+ups = count("SELECT COUNT(*) FROM meta_uploads WHERE status IN ('queued','running')")
 print(f"{jobs} ad(s) being made, {ups} Meta upload(s) running" if jobs or ups else "")
 PY
 )"

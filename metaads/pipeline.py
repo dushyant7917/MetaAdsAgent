@@ -17,7 +17,7 @@ from typing import Any, Callable
 from . import media
 from .bodies import body_folder
 from .config import Settings, load_settings
-from .jobs import JobStore
+from .jobs import REVIEW_PENDING, JobStore
 from .locks import CPU_LOCK
 from .media import PosterWindow
 from .notify import Notifier, NullNotifier
@@ -25,6 +25,10 @@ from .planner import PlanResult, plan_poster_window
 from .durations import DurationEstimateError, pick_durations
 
 log = logging.getLogger("metaads.pipeline")
+
+# Ends the batch summary when ads wait for the owner; Hermes never sees the summary, so this is what asks.
+REVIEW_PROMPT = ("Waiting for your decision. For each ad reply: approve (uploads it to Meta), drop, or what to "
+                 "change. 'approve all' works. Reply to an ad or give its id.")
 
 
 class ValidationError(ValueError):
@@ -130,8 +134,10 @@ class Pipeline:
         return {"language": lang, "text": text, "body": body.stem, "duration": duration}
 
     # ---------- submit / resume ----------
-    def submit(self, items: list[dict[str, Any]], chat_id: str | None = None, background: bool = True) -> str:
-        """Validate everything first (all-or-nothing), then run one ad per item. Returns the batch id."""
+    def submit(self, items: list[dict[str, Any]], chat_id: str | None = None, background: bool = True,
+               review: bool = True) -> str:
+        """Validate everything first (all-or-nothing), then run one ad per item. Returns the batch id.
+        With `review` every finished ad waits for the owner's decision before it may go to Meta."""
         if not items:
             raise ValidationError("No ads requested")
         if len(items) > self.s.limits.max_batch_items:
@@ -159,6 +165,9 @@ class Pipeline:
         if used + len(clean) > self.s.limits.daily_video_cap:
             raise ValidationError(f"Daily video cap {self.s.limits.daily_video_cap}: {used} used today, "
                                   f"{len(clean)} requested")
+        if review:
+            for item in clean:
+                item["review"] = REVIEW_PENDING
         batch_id, job_ids = self.store.create_batch(clean, chat_id, self.owner)
         self._start(batch_id, job_ids, background)
         return batch_id
@@ -184,6 +193,8 @@ class Pipeline:
         ok = [j for j in jobs if j["status"] == "done"]
         lines = [f"{len(ok)} of {len(jobs)} ads created."]
         lines += [f"Ad {j['idx'] + 1} ({j['language']}) failed: {j['error']}" for j in jobs if j["status"] == "failed"]
+        if any(j["status"] == "done" and j["review"] == REVIEW_PENDING for j in jobs):
+            lines.append(REVIEW_PROMPT)
         self._safe(self.notifier.send_report, chat_id, "\n".join(lines))
 
     def _run_guarded(self, job_id: str, chat_id: str | None) -> None:

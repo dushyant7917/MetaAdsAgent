@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS batches (
 CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY, batch_id TEXT, idx INTEGER, language TEXT, text TEXT, body TEXT, duration INTEGER,
   status TEXT, stage TEXT, error TEXT, hook_path TEXT, ad_path TEXT, attempts INTEGER DEFAULT 0,
-  created REAL, updated REAL, estimate TEXT, owner TEXT, redo_of TEXT, plan_hint TEXT
+  created REAL, updated REAL, estimate TEXT, owner TEXT, redo_of TEXT, plan_hint TEXT, review TEXT, reviewed REAL
 );
 CREATE TABLE IF NOT EXISTS redo_plans (
   id TEXT PRIMARY KEY, job_id TEXT, args TEXT, status TEXT, created REAL
@@ -33,6 +33,9 @@ CREATE INDEX IF NOT EXISTS budget_increases_adset ON budget_increases (adset_id,
 """
 
 META_FIELDS = {"upload_id", "status", "stage", "error", "video_id", "image_hash", "adset_id", "ad_id"}
+# What the owner decided about a finished ad: None = not part of the review loop, else one of REVIEW_STATES.
+REVIEW_PENDING, REVIEW_APPROVED, REVIEW_DROPPED, REVIEW_REDONE = "pending", "approved", "dropped", "redone"
+REVIEW_STATES = {REVIEW_PENDING, REVIEW_APPROVED, REVIEW_DROPPED, REVIEW_REDONE}
 JOB_FIELDS = {"status", "stage", "error", "hook_path", "ad_path", "attempts", "duration", "body", "estimate", "owner"}
 
 
@@ -44,9 +47,10 @@ class JobStore:
             c.execute("PRAGMA journal_mode=WAL")
             c.executescript(SCHEMA)
             have = {r["name"] for r in c.execute("PRAGMA table_info(jobs)")}
-            for col in ("estimate", "owner", "redo_of", "plan_hint"):
+            for col, kind in (("estimate", "TEXT"), ("owner", "TEXT"), ("redo_of", "TEXT"), ("plan_hint", "TEXT"),
+                              ("review", "TEXT"), ("reviewed", "REAL")):
                 if col not in have:
-                    c.execute(f"ALTER TABLE jobs ADD COLUMN {col} TEXT")    # database created before this column
+                    c.execute(f"ALTER TABLE jobs ADD COLUMN {col} {kind}")    # database created before this column
 
     def _conn(self) -> sqlite3.Connection:
         c = sqlite3.connect(self.path, timeout=30)
@@ -64,10 +68,10 @@ class JobStore:
                 job_id = f"{batch_id}-{idx + 1}"
                 job_ids.append(job_id)
                 c.execute("INSERT INTO jobs (id,batch_id,idx,language,text,body,duration,status,stage,created,updated,"
-                          "estimate,owner,redo_of,plan_hint) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                          "estimate,owner,redo_of,plan_hint,review) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                           (job_id, batch_id, idx, it["language"], it["text"], it.get("body"), it.get("duration"),
                            "queued", "queued", now, now, it.get("estimate"), owner, it.get("redo_of"),
-                           it.get("plan_hint")))
+                           it.get("plan_hint"), it.get("review")))
         return batch_id, job_ids
 
     def update_job(self, job_id: str, **fields: Any) -> None:
@@ -101,6 +105,21 @@ class JobStore:
     def recent_jobs(self, limit: int = 10) -> list[dict[str, Any]]:
         with closing(self._conn()) as c:
             rows = c.execute("SELECT * FROM jobs ORDER BY created DESC, idx LIMIT ?", (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+    # ---- review: what the owner decided about each finished ad (see REVIEW_STATES)
+    def set_review(self, job_ids: list[str], review: str) -> None:
+        if review not in REVIEW_STATES:
+            raise ValueError(f"Unknown review state: {review}")
+        now = time.time()
+        with closing(self._conn()) as c, c:
+            c.executemany("UPDATE jobs SET review=?, reviewed=? WHERE id=?", [(review, now, j) for j in job_ids])
+
+    def awaiting_review_jobs(self) -> list[dict[str, Any]]:
+        """Ads waiting for the owner's decision (also those still being made), oldest first."""
+        with closing(self._conn()) as c:
+            rows = c.execute("SELECT * FROM jobs WHERE review=? AND status != 'failed' ORDER BY created, idx",
+                             (REVIEW_PENDING,)).fetchall()
         return [dict(r) for r in rows]
 
     # ---- redo plans: a plan is proposed first and only runs after the owner approves it
