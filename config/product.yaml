@@ -12,22 +12,17 @@ rule: >
   at the first "news" of the hook if that word is not part of the "such a news video" phrase. If the phrase
   occurs more than once, use the first occurrence.
 
-# Used only if the LLM answer is unusable: first word matching any of these (any script) anchors the window.
+# Used only if the LLM answer is unusable: the first word containing any of these (any script, spelled the way Whisper
+# writes "video" in each language) anchors the window. "video" and not "news": the poster belongs on "such a news
+# video", and a "news" earlier in the hook is not that phrase.
 fallback_keywords:
-  - news
-  - न्यूज
-  - न्यूज़
-  - খবর
-  - ન્યૂઝ
-  - ನ್ಯೂಸ್
-  - न्यूज
-  - செய்தி
-  - న్యూస్
   - video
   - वीडियो
   - ভিডিও
   - વિડિઓ
+  - વિડિયો
   - ವೀಡಿಯೊ
+  - ವಿಡಿಯೋ
   - व्हिडिओ
   - வீடியோ
   - వీడియో

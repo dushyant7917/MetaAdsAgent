@@ -24,6 +24,7 @@ from .media import PosterWindow
 from .messages import FAIL, IMAGE, OK, WAIT, WARN, blocks, entry, headline, lines
 from .notify import Notifier, NullNotifier
 from .planner import PlanResult, plan_poster_window
+from .transcribe import NoSpeechRecognizedError
 from .durations import DurationEstimateError, pick_durations
 
 log = logging.getLogger("metaads.pipeline")
@@ -31,6 +32,15 @@ log = logging.getLogger("metaads.pipeline")
 # Ends the batch summary when ads wait for the owner; Hermes never sees the summary, so this is what asks.
 REVIEW_PROMPT = lines(headline(WAIT, "Waiting for your decision."), "Reply to an ad (or give its id) with:",
                       "• approve (uploads it to Meta)", "• drop", "• or what to change", "'approve all' works.")
+
+
+# Added to an ad's caption when the poster window is the planner's last-resort guess (no words, or none usable).
+POSTER_GUESS_NOTE = "The poster timing is a guess (the speech could not be matched to the words). Ask to move it if it is off."
+
+
+def _failed_without_speech(job: dict[str, Any]) -> bool:
+    """True when the job's previous attempt ended because Whisper recognized nothing in the clip."""
+    return (job.get("error") or "").startswith(NoSpeechRecognizedError.__name__)
 
 
 class ValidationError(ValueError):
@@ -346,7 +356,14 @@ class Pipeline:
         words_file = work / "words.json"
         if not words_file.exists():
             stage("transcribe")
-            words_file.write_text(json.dumps(self.services.transcribe(clip, lang), ensure_ascii=False))
+            last_attempt = job["attempts"] >= self.s.limits.job_attempts
+            # On the last attempt after a clip with no recognizable speech, Whisper is not asked again: the poster is
+            # placed without words (an empty words.json records that, so a redo does not transcribe it again either).
+            words = [] if last_attempt and _failed_without_speech(job) else self.services.transcribe(clip, lang)
+            if not words and not last_attempt:
+                raise NoSpeechRecognizedError(f"Whisper recognized no words in the {lang} clip, even without its "
+                                              f"confidence filters")
+            words_file.write_text(json.dumps(words, ensure_ascii=False))
         words = json.loads(words_file.read_text())
 
         plan_file = work / "plan.json"
@@ -396,7 +413,8 @@ class Pipeline:
                               hook_path=str(hook_dst), ad_path=str(ad_dst))
         warn = (headline(WARN, "The voice may be cut off at the end of the hook (the clip was probably too short).")
                 if meta["speech_may_be_cut_off"] else None)
-        self._safe(self.notifier.send_video, chat_id, ad_dst, self._caption(job, warn))
+        guess = headline(WARN, POSTER_GUESS_NOTE) if plan["method"] == "default" else None
+        self._safe(self.notifier.send_video, chat_id, ad_dst, self._caption(job, warn, guess))
         return meta
 
     def _caption(self, job: dict[str, Any], *notes: str | None, label: str = "") -> str:

@@ -112,10 +112,10 @@ def plan_poster_window(spoken_text: str, language: str, words: list[dict], clip_
                        settings: Settings | None = None, llm: LLMFn | None = None,
                        product: dict | None = None, guidance: str | None = None) -> PlanResult:
     s = settings or load_settings()
-    if not words:
-        raise ValueError("No recognized words: cannot place the poster")
     product = product or load_product()
     notes: list[str] = []
+    if not words:                       # nothing was transcribed: there is nothing to ask the LLM or search
+        return _default_plan(clip_duration, s, ["No words were recognized; using the middle of the clip"])
     try:
         answer = (llm or gemini_llm(s))(build_prompt(spoken_text, language, words, product, guidance))
         if _valid(answer, len(words)):
@@ -132,8 +132,12 @@ def plan_poster_window(spoken_text: str, language: str, words: list[dict], clip_
         phrase = " ".join(w["word"] for w in words[a:b + 1])
         return PlanResult(seconds_for_span(words, a, b, clip_duration, s), a, b, phrase, "keyword", notes)
 
+    return _default_plan(clip_duration, s, [*notes, "No keyword found; using the middle of the clip"])
+
+
+def _default_plan(clip_duration: float, s: Settings, notes: list[str]) -> PlanResult:
+    """A guess that needs no words: the poster starts `fallback_start_share` into the clip and stays `fallback_seconds`."""
     start = clip_duration * s.poster.fallback_start_share
     length = max(s.poster.min_seconds, s.poster.fallback_seconds)
     window = PosterWindow(round(start, 3), round(min(start + length, clip_duration), 3))
-    notes.append("No keyword found; using the middle of the clip")
     return PlanResult(window, None, None, "", "default", notes)

@@ -79,6 +79,19 @@ def test_an_exact_poster_window_is_used_without_any_ai_call(env):
     assert meta["plan_method"] == "manual" and meta["poster_window"] == {"start": 1.0, "end": 2.5}
 
 
+def test_moving_the_poster_of_an_ad_with_no_transcript_needs_no_whisper_and_no_veo(env):
+    fakes = Fakes(no_speech=True)
+    p, _ = _pipeline(env, fakes)
+    job = p.status(p.submit([HI], chat_id="42", background=False))["ads"][0]["job_id"]
+    rp = RedoPlanner(p)
+    assert fakes.transcribe_calls == 1 and fakes.calls == {"image": 1, "video": 1}
+    plan, done = _run(p, rp, job, ["poster_timing"], poster_start=1.0, poster_end=2.5)
+    assert steps(plan["will_redo"]) == ["plan", "render_hook", "merge"] and not plan["notes"]
+    assert fakes.transcribe_calls == 1 and fakes.calls == {"image": 1, "video": 1}     # only the hook is rendered again
+    meta = json.loads(Path(p.store.get_job(done["job_id"])["ad_path"]).with_suffix(".json").read_text())
+    assert meta["plan_method"] == "manual" and meta["poster_window"] == {"start": 1.0, "end": 2.5}
+
+
 def test_a_different_body_only_rejoins_the_existing_hook(env):
     fakes, p, _, job, rp = _made(env)
     plan, done = _run(p, rp, job, ["body"], new_body="teal")

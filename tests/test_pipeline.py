@@ -8,7 +8,7 @@ import pytest
 from metaads import media
 from metaads.config import Settings, load_settings
 from metaads.jobs import JobStore
-from metaads.pipeline import REVIEW_PROMPT, Pipeline, Services, ValidationError
+from metaads.pipeline import POSTER_GUESS_NOTE, REVIEW_PROMPT, Pipeline, Services, ValidationError
 from metaads.durations import DurationEstimateError
 from metaads.planner import plan_poster_window
 from metaads.videogen import VideoBlockedError
@@ -46,7 +46,7 @@ def env(tmp_path):
 
 class Fakes:
     def __init__(self, fail_image_for=None, video_fail_first=False, block_text=None, durations_fail=False,
-                 video_always_fails=False, transcribe_fails=False):
+                 video_always_fails=False, transcribe_fails=False, no_speech=False):
         self.calls = {"image": 0, "video": 0}
         self.fail_image_for, self.video_fail_first, self.block_text = fail_image_for, video_fail_first, block_text
         self.prompts = []
@@ -55,6 +55,7 @@ class Fakes:
         self.plan_hints = []
         self.durations_fail = durations_fail
         self.video_always_fails, self.transcribe_fails = video_always_fails, transcribe_fails
+        self.no_speech, self.transcribe_calls = no_speech, 0     # no_speech: Whisper recognizes nothing in any clip
 
     def services(self, s):
         def image(text, out, kind="reporter"):
@@ -79,8 +80,11 @@ class Fakes:
             return out
 
         def transcribe(path, lang):
+            self.transcribe_calls += 1
             if self.transcribe_fails:
                 raise RuntimeError("whisper crashed")
+            if self.no_speech:
+                return []
             return [{"i": i, "word": w, "start": 0.3 + i * 0.5, "end": 0.7 + i * 0.5}
                     for i, w in enumerate("aap ko aisi news video banani hai".split())]
 
@@ -177,6 +181,33 @@ def test_failure_in_a_stage_other_than_the_video_is_still_a_failure(env):
     st = p.status(batch)
     assert (st["done"], st["failed"]) == (0, 1) and "whisper crashed" in st["ads"][0]["error"]
     assert not rec.photos
+
+
+def test_a_clip_with_no_recognized_speech_gets_a_guessed_poster_window_on_the_last_attempt(env):
+    fakes = Fakes(no_speech=True)
+    p, rec = _pipeline(env, fakes)
+    batch = p.submit([{"language": "hi", "spoken_text": "ok one"}], chat_id="42", background=False)
+    st = p.status(batch)["ads"][0]
+    job = p.store.get_job(st["job_id"])
+    assert (job["status"], job["attempts"]) == ("done", 2) and fakes.calls["video"] == 1   # no new Veo clip
+    assert fakes.transcribe_calls == 1                                # the last attempt does not ask Whisper again
+    s, _ = env
+    work = Path(s.paths.work_dir) / st["job_id"]
+    assert json.loads((work / "words.json").read_text()) == []        # recorded, so a redo does not transcribe again
+    plan = json.loads((work / "plan.json").read_text())
+    assert plan["method"] == "default" and plan["window"]["start"] == pytest.approx(4 * s.poster.fallback_start_share)
+    caption = rec.videos[0][1]
+    assert POSTER_GUESS_NOTE in caption and caption.rstrip().endswith(f"id {st['job_id']}")
+
+
+def test_an_empty_transcript_is_not_cached_so_each_earlier_attempt_asks_whisper_again(env):
+    s, _ = env
+    s.to_dict()["limits"]["job_attempts"] = 3
+    fakes = Fakes(no_speech=True)
+    p, _ = _pipeline(env, fakes)
+    batch = p.submit([{"language": "hi", "spoken_text": "ok one"}], background=False)
+    assert p.status(batch)["ads"][0]["status"] == "done"
+    assert fakes.transcribe_calls == 2                                # attempts 1 and 2 asked; attempt 3 skipped Whisper
 
 
 def test_when_the_hook_video_fails_even_after_the_retry_an_image_ad_is_made(env):

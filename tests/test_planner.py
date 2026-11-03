@@ -76,6 +76,24 @@ def test_llm_exception_and_no_keyword_falls_back_to_default():
     assert any("LLM failed" in n for n in res.notes)
 
 
+def test_no_words_gives_the_default_window_without_asking_the_llm():
+    def never(prompt):
+        raise AssertionError("the LLM must not be asked when there are no words")
+    res = plan_poster_window("x", "te", [], 8.0, S, llm=never, product=PRODUCT)
+    assert res.method == "default" and res.phrase == ""
+    assert res.window.start == pytest.approx(8.0 * S.poster.fallback_start_share)
+    assert res.window.end - res.window.start == pytest.approx(max(S.poster.min_seconds, S.poster.fallback_seconds))
+    assert any("No words" in n for n in res.notes)
+
+
+@pytest.mark.parametrize("video", ["video", "वीडियो", "ভিডিও", "వీడియో", "வீடியோ", "ವೀಡಿಯೊ", "વિડિયો"])
+def test_the_keyword_fallback_anchors_on_video_in_every_script_not_on_an_earlier_news(video):
+    words = [{"i": i, "word": w, "start": i * 0.4, "end": i * 0.4 + 0.35}
+             for i, w in enumerate(["news", "channel", "owners", "ye", "aisi", "news", video, "banao", "ab"])]
+    res = plan_poster_window("x", "xx", words, 6.0, S, llm=lambda p: {"start_idx": 99, "end_idx": 2}, product=PRODUCT)
+    assert res.method == "keyword" and (res.start_idx, res.end_idx) == (5, 8)   # "news <video> banao ab", not the first "news"
+
+
 def test_prompt_has_indexed_words_the_rule_and_a_format_only_sample():
     seen = {}
     words = _words("aisi news video banani")
