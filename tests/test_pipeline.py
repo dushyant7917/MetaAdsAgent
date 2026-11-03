@@ -140,25 +140,29 @@ def test_one_ad_per_input_even_for_identical_inputs(env):
     assert "teal-darkmint-mintbox" in ads[2].name
     assert len(rec.videos) == 3 and rec.texts[-1].startswith("✅ 3 of 3 ads created")
     s, tmp = env
-    meta = json.loads(ads[0].with_suffix(".json").read_text())
-    assert meta["language"] == "hi" and meta["plan_method"] == "llm" and meta["poster_window"]["end"] > meta["poster_window"]["start"]
-    assert (Path(s.paths.hooks_dir) / "hi").is_dir() and (Path(s.paths.ads_dir) / "ta").is_dir()
+    plan = json.loads((Path(s.paths.work_dir) / st["ads"][0]["job_id"] / "plan.json").read_text())
+    assert plan["method"] == "llm" and plan["window"]["end"] > plan["window"]["start"]
+    assert (Path(s.paths.ads_dir) / "ta").is_dir()
+    # nothing is stored twice: no published hook, no .json beside the ads, and the merged ad moved out of the work folder
+    assert not list(Path(s.paths.hooks_dir).rglob("*")) and not list(Path(s.paths.ads_dir).rglob("*.json"))
+    assert not list(Path(s.paths.work_dir).rglob("ad*.mp4"))
     info = media.probe(ads[0], s)
     assert (info.width, info.height, info.has_audio) == (1080, 1920, True)
 
 
 def test_durations_are_requested_only_for_texts_without_one_and_the_estimate_is_logged(env):
     fakes = Fakes()
-    p, _ = _pipeline(env, fakes)
+    p, rec = _pipeline(env, fakes)
     items = [{"language": "hi", "spoken_text": "Aisi news video banani hai?"}, {"language": "ta", "spoken_text": "x y z"},
              {"language": "hi", "spoken_text": "Aisi news video banani hai?", "duration": 8}]      # this one names its length
     batch = p.submit(items, background=False)
     assert fakes.duration_calls == [2]                                # only the two without a duration are sent
     assert sorted(pr[1] for pr in fakes.prompts) == [4, 4, 8]
-    ad = p.status(batch)["ads"][0]["ad_path"]
-    meta = json.loads(Path(ad).with_suffix(".json").read_text())
-    assert meta["duration_estimate"]["speech_seconds"] == 3.0 and meta["measured_speech_end"] > 0
-    assert meta["speech_may_be_cut_off"] is False
+    job = p.store.get_job(p.status(batch)["ads"][0]["job_id"])
+    assert json.loads(job["estimate"])["speech_seconds"] == 3.0
+    s, _ = env
+    assert json.loads((Path(s.paths.work_dir) / job["id"] / "words.json").read_text())[-1]["end"] > 0
+    assert not any("cut off" in caption for _, caption in rec.videos)
 
 
 def test_failure_in_one_item_does_not_stop_the_others(env):
@@ -219,13 +223,12 @@ def test_when_the_hook_video_fails_even_after_the_retry_an_image_ad_is_made(env)
     assert fakes.calls["video"] == 2                                  # tried, retried, then gave up on the video
     job = p.store.get_job(st["job_id"])
     assert (job["status"], job["ad_format"]) == ("done", "image") and "Veo is down" in job["fallback_reason"]
-    assert job["review"] == "pending" and job["hook_path"] is None    # it still waits for the owner's decision
+    assert job["review"] == "pending"                                 # it still waits for the owner's decision
     assert fakes.image_requests == [("Headline", "reporter"), ("Headline", "image_ad")]
     s, _ = env
     info = media.probe(Path(job["ad_path"]), s)
     assert (info.width, info.height) == (1024, 1280) and job["ad_path"].endswith("_image.png")
-    meta = json.loads(Path(job["ad_path"]).with_suffix(".json").read_text())
-    assert meta["ad_format"] == "image" and "Veo is down" in meta["fallback_reason"]
+    assert not list(Path(s.paths.ads_dir).rglob("*.json")) and not (Path(s.paths.work_dir) / job["id"] / "image_ad.png").exists()
     assert not rec.videos and len(rec.photos) == 1
     caption = rec.photos[0][1]
     assert caption.startswith("🖼 Image ad · Ad 1/1 · Hindi\nSays: Dialogue words\nThumbnail: Headline\n⚠️ The hook video failed: ")

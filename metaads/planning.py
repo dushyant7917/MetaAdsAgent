@@ -29,7 +29,7 @@ from .adaccount import (attribution_windows_param, fetch_adsets, get_all, insigh
 from .bodies import available_bodies
 from .config import Settings
 from .jobrunner import bootstrap
-from .jobs import JobStore
+from .jobs import FORMAT_VIDEO, JobStore
 from .meta import GraphClient, IST, default_start_time
 from .money import paise_to_inr
 from .performance import (AdSet, format_reason, format_stats, hook_outcomes, image_share, is_win,
@@ -368,20 +368,24 @@ class Planner:
             made=job["created"] if job else 0.0, ad_format=job["ad_format"] if job else None,
             body=job["body"] if job else None)
 
-    def reusable_hook_jobs(self) -> set[str]:
-        """Jobs whose work folder must be kept: every winning job of a hook that is still reusable (not retired). A new
-        ad on a proven hook is a redo of one of them and reuses its image, clip, words and poster plan. One Meta read
-        (the ad sets with their lifetime results); nothing else of `collect` is needed."""
+    def hook_jobs_to_keep(self) -> set[str]:
+        """Video jobs whose work folder (the hook's image, clip, words, poster plan and hook video) must be kept:
+          - every winning job of a hook that is still reusable (not retired): a new ad on a proven hook is a redo of
+            one of them and reuses those files;
+          - every job whose ad set still runs below the win bar: its outcome is unknown and it may win days after the
+            upload. It stops being kept once its ad set is paused without winning.
+        Image ads are never kept: a proven image hook is made again as a new 9:16 hook image, nothing is reused.
+        One Meta read (the ad sets with their lifetime results); nothing else of `collect` is needed."""
         jobs = {j["adset_id"]: j for j in self.store.uploaded_jobs()}
         adsets = [self._adset(language, row, insight, jobs.get(str(row["id"])), None)
                   for language, row, insight in managed_rows(
                       fetch_adsets(self.client, self.account_id, self._adset_fields(), ADSET_STATUSES), self.campaigns)]
-        keep: set[str] = set()
+        keep: set[str] = {a.job_id for a in adsets if a.job_id and a.active and not is_win(a, self.s)}
         for language in set(self.campaigns.values()):
             reusable_hooks = {a.hook for a in proven_hooks(adsets, language, self.s)[0]}
             keep |= {a.job_id for a in adsets if a.language == language and a.hook in reusable_hooks and a.job_id
                      and is_win(a, self.s)}
-        return keep
+        return {a.job_id for a in adsets if a.job_id in keep and a.ad_format == FORMAT_VIDEO}
 
     def collect(self, now: datetime) -> Inputs:
         rules = self.s.autopause

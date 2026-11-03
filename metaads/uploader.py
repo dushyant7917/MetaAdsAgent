@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from . import media
+from . import hookfiles, media
 from .adaccount import campaign_env_var
 from .config import Settings, _resolve_path
 from .jobs import FORMAT_IMAGE, REVIEW_APPROVED, JobStore
@@ -326,12 +326,12 @@ class MetaUploader:
                 save(j["id"], ad_id=ad.id, status="done", stage="done", error=None)
 
     def _thumbnail(self, job: dict) -> Path:
-        work = Path(self.s.paths.work_dir) / job["id"]
         if job["ad_format"] == FORMAT_IMAGE:
             return Path(job["ad_path"])                  # an image ad is its own image
-        image = work / "image.png"                       # what Veo animated: the ad's own first frame, already 9:16
+        image = hookfiles.stage_file(self.s, job, "image", self.store.get_job)   # what Veo animated: the ad's own first frame, already 9:16
         if image.is_file():
             return image
+        work = hookfiles.work_folder(self.s, job["id"])
         work.mkdir(parents=True, exist_ok=True)
         with CPU_LOCK:
             return media.extract_frame(job["ad_path"], 0.0, work / "meta_thumb.png", self.s)

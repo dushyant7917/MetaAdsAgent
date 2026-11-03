@@ -75,8 +75,9 @@ def test_an_exact_poster_window_is_used_without_any_ai_call(env):
     plan, done = _run(p, rp, job, ["poster_timing"], poster_start=1.0, poster_end=2.5)
     assert "no AI call" in plan["will_redo"][0]["what"] and plan["costs"]["gemini_calls"] == 0
     assert len(fakes.plan_hints) == calls and fakes.calls == {"image": 1, "video": 1}
-    meta = json.loads(Path(p.store.get_job(done["job_id"])["ad_path"]).with_suffix(".json").read_text())
-    assert meta["plan_method"] == "manual" and meta["poster_window"] == {"start": 1.0, "end": 2.5}
+    plan_file = Path(env[0].paths.work_dir) / done["job_id"] / "plan.json"          # the new ad's own plan file
+    assert json.loads(plan_file.read_text())["method"] == "manual"
+    assert json.loads(plan_file.read_text())["window"] == {"start": 1.0, "end": 2.5}
 
 
 def test_moving_the_poster_of_an_ad_with_no_transcript_needs_no_whisper_and_no_veo(env):
@@ -88,8 +89,9 @@ def test_moving_the_poster_of_an_ad_with_no_transcript_needs_no_whisper_and_no_v
     plan, done = _run(p, rp, job, ["poster_timing"], poster_start=1.0, poster_end=2.5)
     assert steps(plan["will_redo"]) == ["plan", "render_hook", "merge"] and not plan["notes"]
     assert fakes.transcribe_calls == 1 and fakes.calls == {"image": 1, "video": 1}     # only the hook is rendered again
-    meta = json.loads(Path(p.store.get_job(done["job_id"])["ad_path"]).with_suffix(".json").read_text())
-    assert meta["plan_method"] == "manual" and meta["poster_window"] == {"start": 1.0, "end": 2.5}
+    plan_file = Path(env[0].paths.work_dir) / done["job_id"] / "plan.json"          # the new ad's own plan file
+    assert json.loads(plan_file.read_text())["method"] == "manual"
+    assert json.loads(plan_file.read_text())["window"] == {"start": 1.0, "end": 2.5}
 
 
 def test_a_different_body_only_rejoins_the_existing_hook(env):
@@ -98,6 +100,9 @@ def test_a_different_body_only_rejoins_the_existing_hook(env):
     assert steps(plan["will_redo"]) == ["merge"] and "render_hook" in steps(plan["will_reuse"])
     assert "teal" in Path(p.store.get_job(done["job_id"])["ad_path"]).name
     assert fakes.calls == {"image": 1, "video": 1}
+    new = p.store.get_job(done["job_id"])
+    assert (new["redo_of"], new["reused_stages"]) == (job, 5)                          # the five hook files are the old ad's
+    assert not [f for f in (Path(env[0].paths.work_dir) / done["job_id"]).iterdir()]   # nothing was copied into its folder
 
 
 def test_new_spoken_text_keeps_the_image_and_estimates_the_duration_again(env):
@@ -165,7 +170,7 @@ def test_bad_requests_are_refused(env):
 def test_details_tell_the_bot_what_the_ad_is_made_of(env):
     _, p, _, job, rp = _made(env)
     d = rp.details(job)
-    assert d["language"] == "hi" and d["stored_stages"] == ["image", "video", "transcribe", "plan", "render_hook", "merge"]
+    assert d["language"] == "hi" and d["stored_stages"] == ["image", "video", "transcribe", "plan", "render_hook"]   # the final ad is not stored twice
     assert d["poster"]["to"] > d["poster"]["from"] and d["spoken_words"] and "voice_may_be_cut_off" in d
 
 

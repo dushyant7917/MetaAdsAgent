@@ -134,7 +134,9 @@ def test_a_winning_hook_keeps_its_work_folder_but_not_its_published_files(pings,
     result = cleaner.run(apply=True)
     assert exists(disk, "w-1") == [True, False, False, False, False]
     assert exists(disk, "l-1") == [False] * 5
-    assert result.kept_winner_folders == 1 and result.errors == []
+    assert disk.path("work_dir", "w-1", "image.png").exists()               # the hook data stays
+    assert not disk.path("work_dir", "w-1", "ad.mp4").exists()              # the finished ad does not
+    assert result.kept_hook_folders == 1 and result.errors == []
 
 
 def test_meta_is_read_only_when_something_is_due(pings, disk):
@@ -216,16 +218,22 @@ def test_every_winning_job_of_a_hook_that_is_not_retired_is_reusable(disk):
     # hook "b": won once, then 3 ad sets in a row were paused before 50 results: retired
     for i, created in enumerate((1, 2, 3, 4), 1):
         add_job(disk, f"b-{i}", hook="b", upload="done", upload_updated=NOW, created=NOW - (10 - created) * DAY)
-    add_job(disk, "c-1", hook="c", upload="done", upload_updated=NOW)                      # running below 50: undecided
+    add_job(disk, "c-1", hook="c", upload="done", upload_updated=NOW)                      # running below 50: undecided, kept
+    add_job(disk, "p-1", hook="p", upload="done", upload_updated=NOW)                      # paused below 50, never won: a loser
+    add_job(disk, "i-1", hook="i", upload="done", upload_updated=NOW, ad_format="image")   # image ad: nothing to reuse
+    add_job(disk, "iw-1", hook="iw", upload="done", upload_updated=NOW, ad_format="image")  # image ad that won: still nothing to reuse
+    add_job(disk, "m-1", hook="m", upload="done", upload_updated=NOW)                      # no ad set in the read (in review...)
+    disk.store.upsert_meta_upload("m-1", status="done", adset_id="as-gone", ad_id="ad1")
     add_job(disk, "z-1", hook="z", upload="done", upload_updated=NOW)                      # its ad set is in another campaign
     rows = [adset_row("as-a-1", "c-hi", 60, False), adset_row("as-a-2", "c-hi", 55, True), adset_row("as-a-3", "c-hi", 10, False),
             adset_row("as-b-1", "c-hi", 50, False), adset_row("as-b-2", "c-hi", 5, False), adset_row("as-b-3", "c-hi", 0, False),
             adset_row("as-b-4", "c-hi", 9, False), adset_row("as-c-1", "c-hi", 20, True),
+            adset_row("as-p-1", "c-hi", 20, False), adset_row("as-i-1", "c-hi", 20, True), adset_row("as-iw-1", "c-hi", 90, True),
             adset_row("as-z-1", "c-other", 99, True), adset_row("not-ours", "c-hi", 99, True)]
     fake = FakeMeta([rows])
     client = GraphClient.from_settings("tok", disk.s, transport=httpx.MockTransport(fake), sleep=lambda x: None, backoff=0)
-    keep = Planner(disk.s, client, "111", {"c-hi": "Hindi"}, disk.store).reusable_hook_jobs()
-    assert keep == {"a-1", "a-2"}
+    keep = Planner(disk.s, client, "111", {"c-hi": "Hindi"}, disk.store).hook_jobs_to_keep()
+    assert keep == {"a-1", "a-2", "c-1"}      # winners of a live hook, and the ad still running below 50 (outcome unknown)
     assert len(fake.reads) == 1                                              # one read, not the planner's three
     assert json.loads(fake.reads[0]["filtering"])[0]["value"] == ["ACTIVE", "PAUSED"]
     assert "date_preset(maximum)" in fake.reads[0]["fields"]
@@ -237,4 +245,60 @@ def test_a_later_win_resets_the_retirement_of_a_hook(disk):
     rows = [adset_row("as-b-1", "c-hi", 5, False), adset_row("as-b-2", "c-hi", 5, False), adset_row("as-b-3", "c-hi", 5, False),
             adset_row("as-b-4", "c-hi", 70, False), adset_row("as-b-5", "c-hi", 5, False)]      # 3 failures, then a win, then 1
     client = GraphClient.from_settings("tok", disk.s, transport=httpx.MockTransport(FakeMeta([rows])), sleep=lambda x: None, backoff=0)
-    assert Planner(disk.s, client, "111", {"c-hi": "Hindi"}, disk.store).reusable_hook_jobs() == {"b-4"}
+    assert Planner(disk.s, client, "111", {"c-hi": "Hindi"}, disk.store).hook_jobs_to_keep() == {"b-4"}
+
+
+# ---------- hook files are never copied: a later ad points to the folder of the ad that made them ----------
+def reuse(disk, child, parent, stages=5):
+    from contextlib import closing
+    with closing(disk.store._conn()) as c, c:
+        c.execute("UPDATE jobs SET redo_of=?, reused_stages=? WHERE id=?", (parent, stages, child))
+
+
+def test_the_folder_an_ad_to_keep_takes_its_hook_files_from_stays_but_nothing_else_of_it(pings, disk):
+    add_job(disk, "root", upload="done", upload_updated=NOW - 3 * DAY)               # lost itself, but its files are reused
+    add_job(disk, "kid", upload="done", upload_updated=NOW - 3 * DAY)                # undecided or a winner: to keep
+    add_job(disk, "other", upload="done", upload_updated=NOW - 3 * DAY)              # unrelated loser
+    reuse(disk, "kid", "root")
+    make_file(disk.path("work_dir", "root", "hook.mp4"), 10, now=NOW)
+    result = OldDataCleaner(disk.s, disk.store, lambda: {"kid"}, lambda: NOW).run(apply=True)
+    assert disk.path("work_dir", "root", "image.png").exists() and disk.path("work_dir", "root", "hook.mp4").exists()
+    assert not disk.path("work_dir", "root", "ad.mp4").exists()                      # not hook data
+    assert exists(disk, "root")[1:] == [False] * 4 and exists(disk, "kid")[1:] == [False] * 4   # published files go
+    assert exists(disk, "other") == [False] * 5
+    assert result.kept_hook_folders == 2 and result.errors == []
+
+
+def test_the_chain_of_reused_folders_is_followed_to_its_start(pings, disk):
+    for job_id in ("a", "b", "c"):
+        add_job(disk, job_id, upload="done", upload_updated=NOW - 3 * DAY)
+    reuse(disk, "b", "a", 3)
+    reuse(disk, "c", "b", 5)
+    OldDataCleaner(disk.s, disk.store, lambda: {"c"}, lambda: NOW).run(apply=True)
+    assert [exists(disk, j)[0] for j in ("a", "b", "c")] == [True, True, True]
+
+
+def test_an_ad_still_in_review_keeps_the_folder_it_reuses_from(pings, disk):
+    add_job(disk, "root", upload="done", upload_updated=NOW - 3 * DAY)
+    add_job(disk, "kid", review="pending")                                           # waits for the owner's answer
+    reuse(disk, "kid", "root")
+    OldDataCleaner(disk.s, disk.store, lambda: set(), lambda: NOW).run(apply=True)
+    assert exists(disk, "root")[0] and exists(disk, "kid")[0]
+
+
+def test_when_nothing_reuses_or_keeps_it_the_folder_goes(pings, disk):
+    add_job(disk, "root", upload="done", upload_updated=NOW - 3 * DAY)
+    add_job(disk, "kid", upload="done", upload_updated=NOW - 3 * DAY)
+    reuse(disk, "kid", "root")
+    OldDataCleaner(disk.s, disk.store, lambda: set(), lambda: NOW).run(apply=True)   # a paused loser, or a retired hook
+    assert exists(disk, "root") == [False] * 5 and exists(disk, "kid") == [False] * 5
+
+
+def test_an_image_two_ads_share_stays_while_one_of_them_is_wanted(pings, disk):
+    from contextlib import closing
+    add_job(disk, "old", ad_format="image", upload="done", upload_updated=NOW - 3 * DAY)
+    add_job(disk, "new", ad_format="image", review="pending")                        # the redo that kept the same image
+    with closing(disk.store._conn()) as c, c:
+        c.execute("UPDATE jobs SET ad_path=? WHERE id='new'", (disk.store.get_job("old")["ad_path"],))
+    OldDataCleaner(disk.s, disk.store, lambda: set(), lambda: NOW).run(apply=True)
+    assert disk.path("ads_dir", "hi", "ad_old.mp4").exists()

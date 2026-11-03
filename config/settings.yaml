@@ -180,7 +180,7 @@ orphan_data:                   # metaads.orphan_data, runs as set in schedules (
   min_age_hours: 24            # a file/folder is only deleted once nothing in it changed for this long (a job may still be writing it)
 
 old_data:                      # metaads.old_data, runs as set in schedules (scripts/install_old_data_cleanup_timer.sh): deletes the files of ads that are done with
-  uploaded_keep_days: 2        # an ad uploaded to Meta (or whose upload failed) loses its files this many days after the upload; the work folder of a winning ad whose hook is not retired stays (ad_planning.retire_hook_after_failures)
+  uploaded_keep_days: 2        # an ad uploaded to Meta (or whose upload failed) loses its files this many days after the upload; the work folder (the hook's data, not the finished ad) of a video ad stays while its hook is a winner that is not retired (ad_planning.retire_hook_after_failures) or its ad set still runs below ad_planning.performing_min_results
   discarded_keep_days: 2       # an ad you dropped or redid, or that failed, loses its files this many days after that; a redo plan you never answered protects its ad for this long
 
 ad_planning:                   # metaads.planning: how many new ads the rest of the month can afford. Amounts here are Rs, not paise

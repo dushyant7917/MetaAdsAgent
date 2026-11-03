@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY, batch_id TEXT, idx INTEGER, language TEXT, spoken_text TEXT, thumbnail_text TEXT, body TEXT,
   duration INTEGER, status TEXT, stage TEXT, error TEXT, hook_path TEXT, ad_path TEXT, attempts INTEGER DEFAULT 0,
   created REAL, updated REAL, estimate TEXT, owner TEXT, redo_of TEXT, plan_hint TEXT, review TEXT, reviewed REAL,
-  ad_format TEXT DEFAULT 'video', fallback_reason TEXT
+  ad_format TEXT DEFAULT 'video', fallback_reason TEXT, reused_stages INTEGER DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS redo_plans (
   id TEXT PRIMARY KEY, job_id TEXT, args TEXT, status TEXT, created REAL
@@ -47,7 +47,7 @@ PLAN_PENDING, PLAN_APPROVED, PLAN_REJECTED, PLAN_SUPERSEDED = "pending", "approv
 REDO_PENDING = "pending"                                             # a redo plan the owner has not answered yet
 REVIEW_STATES = {REVIEW_PENDING, REVIEW_APPROVED, REVIEW_DROPPED, REVIEW_REDONE}
 JOB_FIELDS = {"status", "stage", "error", "hook_path", "ad_path", "attempts", "duration", "body", "estimate", "owner",
-              "ad_format", "fallback_reason"}
+              "ad_format", "fallback_reason", "reused_stages"}
 # What kind of file an ad is: a hook + body video, or a single 4:5 image.
 FORMAT_VIDEO, FORMAT_IMAGE = "video", "image"
 
@@ -65,7 +65,8 @@ class JobStore:
                 have = (have - {"text"}) | {"spoken_text"}
             for col, kind in (("estimate", "TEXT"), ("owner", "TEXT"), ("redo_of", "TEXT"), ("plan_hint", "TEXT"),
                               ("review", "TEXT"), ("reviewed", "REAL"), ("thumbnail_text", "TEXT"),
-                              ("ad_format", "TEXT DEFAULT 'video'"), ("fallback_reason", "TEXT")):
+                              ("ad_format", "TEXT DEFAULT 'video'"), ("fallback_reason", "TEXT"),
+                              ("reused_stages", "INTEGER DEFAULT 0")):
                 if col not in have:
                     c.execute(f"ALTER TABLE jobs ADD COLUMN {col} {kind}")    # database created before this column
             c.execute("UPDATE jobs SET thumbnail_text = spoken_text WHERE thumbnail_text IS NULL")
@@ -87,12 +88,12 @@ class JobStore:
                 job_id = f"{batch_id}-{idx + 1}"
                 job_ids.append(job_id)
                 c.execute("INSERT INTO jobs (id,batch_id,idx,language,spoken_text,thumbnail_text,body,duration,status,"
-                          "stage,created,updated,estimate,owner,redo_of,plan_hint,review,ad_format) "
-                          "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                          "stage,created,updated,estimate,owner,redo_of,plan_hint,review,ad_format,reused_stages) "
+                          "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                           (job_id, batch_id, idx, it["language"], it["spoken_text"], it["thumbnail_text"], it.get("body"),
                            it.get("duration"), "queued", "queued", now, now, it.get("estimate"), owner,
                            it.get("redo_of"), it.get("plan_hint"), it.get("review"),
-                           it.get("ad_format", FORMAT_VIDEO)))
+                           it.get("ad_format", FORMAT_VIDEO), it.get("reused_stages", 0)))
         return batch_id, job_ids
 
     def update_job(self, job_id: str, **fields: Any) -> None:
@@ -100,6 +101,16 @@ class JobStore:
         if bad:
             raise ValueError(f"Unknown job fields: {bad}")
         fields["updated"] = time.time()
+        cols = ", ".join(f"{k}=?" for k in fields)
+        with closing(self._conn()) as c, c:
+            c.execute(f"UPDATE jobs SET {cols} WHERE id=?", (*fields.values(), job_id))
+
+    def relink_files(self, job_id: str, **fields: Any) -> None:
+        """Point a job at files that already exist elsewhere (reused_stages, ad_path, hook_path). Unlike update_job it
+        leaves `updated` alone: the cleanup counts days from it."""
+        bad = set(fields) - {"reused_stages", "ad_path", "hook_path"}
+        if bad:
+            raise ValueError(f"Unknown job fields: {bad}")
         cols = ", ".join(f"{k}=?" for k in fields)
         with closing(self._conn()) as c, c:
             c.execute(f"UPDATE jobs SET {cols} WHERE id=?", (*fields.values(), job_id))

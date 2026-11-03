@@ -6,28 +6,25 @@ The ad is built in a fixed order and every stage feeds the next one:
     image -> video (Veo) -> transcribe (Whisper) -> plan (poster window) -> render_hook -> merge
 
 Whisper and the planner read the Veo clip, so they only stay valid while that clip is kept. A change therefore
-restarts the chain at one stage and redoes everything after it; everything before it is copied from the old ad.
-The old ad is never touched: a redo is a new job whose work folder is seeded with the reused files, so the normal
-stage cache skips them.
+restarts the chain at one stage and redoes everything after it; everything before it is reused from the old ad.
+The old ad is never touched and nothing is copied: a redo is a new job that records `redo_of` and how many leading
+stages it reuses (`reused_stages`, see metaads.hookfiles), so the normal stage cache finds those files in the old
+ad's folder and skips them.
 """
 from __future__ import annotations
 
 import json
-import shutil
 import uuid
 from pathlib import Path
 from typing import Any
 
-from . import media
+from . import hookfiles, media
 from .durations import DurationEstimateError
 from .jobs import FORMAT_IMAGE, FORMAT_VIDEO, REVIEW_PENDING, REVIEW_REDONE
 from .media import PosterWindow
 from .pipeline import Pipeline, ValidationError
 
-STAGES = ["image", "video", "transcribe", "plan", "render_hook", "merge"]
-FILES = {"image": "image.png", "video": "video.mp4", "transcribe": "words.json", "plan": "plan.json",
-         "render_hook": "hook.mp4", "merge": "ad.mp4"}
-IMAGE_AD_FILE = "image_ad.png"      # the only stage of an image ad
+STAGES, FILES = hookfiles.STAGES, hookfiles.HOOK_FILES
 IMAGE_AD_CHANGES = {"thumbnail_text", "image", "spoken_text"}   # what can be redone on an image ad and keep it an image ad
 # What the owner wants changed -> the first stage that has to run again.
 CHANGES = {
@@ -46,8 +43,9 @@ class RedoPlanner:
         self.p = pipeline
 
     # ---------- what exists ----------
-    def _work(self, job_id: str) -> Path:
-        return Path(self.p.s.paths.work_dir) / job_id
+    def _file(self, job: dict[str, Any], stage: str) -> Path:
+        """The hook file of `stage` that `job` uses: its own, or one of the ad it reuses from."""
+        return hookfiles.stage_file(self.p.s, job, stage, self.p.store.get_job)
 
     def _job(self, job_id: str) -> dict[str, Any]:
         try:
@@ -58,26 +56,26 @@ class RedoPlanner:
     def details(self, job_id: str) -> dict[str, Any]:
         """Everything the bot needs to understand an ad before proposing a redo."""
         job = self._job(job_id)
-        work = self._work(job_id)
-        have = {stage: (work / name).exists() for stage, name in FILES.items()}
+        files = {stage: self._file(job, stage) for stage in FILES}
+        have = {stage: path.exists() for stage, path in files.items()}
         out: dict[str, Any] = {
             "job_id": job_id, "ad_number_in_batch": job["idx"] + 1, "language": job["language"],
             "spoken_text": job["spoken_text"], "thumbnail_text": job["thumbnail_text"], "ad_format": job["ad_format"],
             "fallback_reason": job["fallback_reason"], "body": job["body"], "clip_seconds_requested": job["duration"], "status": job["status"],
-            "stage": job["stage"], "ad_path": job["ad_path"], "hook_path": job["hook_path"], "redo_of": job["redo_of"],
-            "stored_stages": [s for s in STAGES if have[s]],
+            "stage": job["stage"], "ad_path": job["ad_path"], "redo_of": job["redo_of"],
+            "stored_stages": [s for s in FILES if have[s]],
         }
         if job.get("estimate"):
             out["estimated_speech_seconds"] = json.loads(job["estimate"]).get("speech_seconds")
         if have["transcribe"]:
-            words = json.loads((work / "words.json").read_text())
+            words = json.loads(files["transcribe"].read_text())
             out["spoken_words"] = " ".join(w["word"] for w in words)
             if words:
                 out["speech_ends_at"] = words[-1]["end"]
         if have["video"]:
-            out["clip_seconds_actual"] = media.probe(work / "video.mp4", self.p.s).duration
+            out["clip_seconds_actual"] = media.probe(files["video"], self.p.s).duration
         if have["plan"]:
-            plan = json.loads((work / "plan.json").read_text())
+            plan = json.loads(files["plan"].read_text())
             out["poster"] = {"from": plan["window"]["start"], "to": plan["window"]["end"],
                              "words": plan["phrase"], "chosen_by": plan["method"]}
         if "speech_ends_at" in out and "clip_seconds_actual" in out:
@@ -122,13 +120,12 @@ class RedoPlanner:
                                         "thumbnail_text": new_thumbnail_text or job["thumbnail_text"],
                                         "body": new_body or job["body"], "duration": duration})
 
-        work = self._work(job_id)
         start = min(STAGES.index(CHANGES[c]) for c in changes)
         notes: list[str] = []
         if asked_image_ad:
             notes.append("This was an image ad; the redo makes a video ad from the same hook.")
         for i in range(start):                                   # a stage to reuse must still be on disk
-            if not (work / FILES[STAGES[i]]).exists():
+            if not self._file(job, STAGES[i]).exists():
                 notes.append(f"The old {STAGES[i]} file is no longer stored, so the redo starts from there.")
                 start = i
                 break
@@ -141,7 +138,8 @@ class RedoPlanner:
         if poster_start is not None and not manual:
             notes.append("The exact poster window is ignored: the clip is made again, so its timing is different. "
                          "The poster is placed on the new clip instead.")
-        old_plan = json.loads((work / "plan.json").read_text()) if (work / "plan.json").exists() else None
+        plan_file = self._file(job, "plan")
+        old_plan = json.loads(plan_file.read_text()) if plan_file.exists() else None
         old_body = job["body"]
         redo, reuse = [], []
         spoken_changed = "spoken_text" in changes and checked["spoken_text"] != job["spoken_text"]
@@ -181,9 +179,8 @@ class RedoPlanner:
                                         "body": job["body"]})
         new_image = "image" in changes or ("thumbnail_text" in changes and checked["thumbnail_text"] != job["thumbnail_text"])
         spoken_changed = "spoken_text" in changes and checked["spoken_text"] != job["spoken_text"]
-        image_file = self._work(job["id"]) / IMAGE_AD_FILE
         notes = []
-        if not new_image and not image_file.exists():
+        if not new_image and not (job["ad_path"] and Path(job["ad_path"]).is_file()):
             new_image = True
             notes.append("The old image is no longer stored, so a new image is made.")
         redo = [{"step": "image_ad", "what": "Make a new 4:5 image (1 gpt-image-2 call)"}] if new_image else []
@@ -265,12 +262,21 @@ class RedoPlanner:
             elif a["duration"] is not None:
                 item["estimate"] = None                                  # chosen by the owner, not estimated
             if a["poster_feedback"] and start <= STAGES.index("plan"):
-                item["plan_hint"] = self._hint(job["id"], a["poster_feedback"])
+                item["plan_hint"] = self._hint(job, a["poster_feedback"])
+            if not is_image_ad:
+                for stage in STAGES[:start]:                             # reused, never copied: it must still exist
+                    if not self._file(job, stage).exists():
+                        raise ValidationError(f"The {stage} file of ad {job['id']} is gone, so this plan cannot reuse it. "
+                                              f"Make a new plan.")
+                item["reused_stages"] = start
             chat_id = self.p.store.batch_chat_id(job["batch_id"])
             batch_id, [new_id] = self.p.store.create_batch([item], chat_id, self.p.owner)
             if job["review"] == REVIEW_PENDING:                          # the old ad is replaced, not waiting any more
                 self.p.store.set_review([job["id"]], REVIEW_REDONE)
-            self._seed(job["id"], new_id, start, a)
+            if is_image_ad and start > 0:                                # the same image file is the new ad too
+                self.p.store.update_job(new_id, ad_path=job["ad_path"])
+            elif a["poster_start"] is not None and STAGES[start] == "plan":
+                self._manual_poster_window(job, new_id, a)
         except Exception:
             self.p.store.set_redo_plan_status(plan_id, "approved", "pending")   # nothing ran; the plan stays usable
             raise
@@ -278,8 +284,8 @@ class RedoPlanner:
         return {"started": True, "batch_id": batch_id, "job_id": new_id, "redo_of": job["id"],
                 "message": "Redo started. The new ad arrives in the chat when it is ready; the old one is kept."}
 
-    def _hint(self, old_job_id: str, feedback: str) -> str:
-        plan_file = self._work(old_job_id) / "plan.json"
+    def _hint(self, job: dict[str, Any], feedback: str) -> str:
+        plan_file = self._file(job, "plan")
         previous = ""
         if plan_file.exists():
             old = json.loads(plan_file.read_text())
@@ -287,25 +293,18 @@ class RedoPlanner:
                         f"(from {old['window']['start']} s to {old['window']['end']} s). ")
         return f"{previous}The owner said about it: \"{feedback.strip()}\""
 
-    def _seed(self, old_id: str, new_id: str, start: int, a: dict) -> None:
-        """Copy the reusable files into the new job's folder; the normal stage cache then skips those stages."""
-        old, new = self._work(old_id), self._work(new_id)
+    def _manual_poster_window(self, job: dict[str, Any], new_id: str, a: dict) -> None:
+        """The owner gave the exact poster window: the new ad's own plan file, made from the reused clip's length."""
+        s = self.p.s
+        clip = media.probe(self._file(job, "video"), s).duration
+        lo = max(a["poster_start"], 0.0)
+        hi = min(a["poster_end"], clip)
+        if hi - lo < s.poster.min_seconds:
+            hi = min(lo + s.poster.min_seconds, clip)
+        if hi <= lo:
+            raise ValidationError(f"The clip is only {clip:.1f} s long; the poster cannot start at {lo} s.")
+        plan = {"window": {"start": round(lo, 3), "end": round(hi, 3)}, "start_idx": None, "end_idx": None,
+                "phrase": "", "method": "manual", "notes": ["Window set by the owner"]}
+        new = hookfiles.work_folder(s, new_id)
         new.mkdir(parents=True, exist_ok=True)
-        if a.get("format") == FORMAT_IMAGE:                      # an image ad has one stage, the 4:5 image
-            if start > 0:
-                shutil.copy2(old / IMAGE_AD_FILE, new / IMAGE_AD_FILE)
-            return
-        for stage in STAGES[:start]:
-            shutil.copy2(old / FILES[stage], new / FILES[stage])
-        if a["poster_start"] is not None and STAGES[start] == "plan":
-            s = self.p.s
-            clip = media.probe(new / "video.mp4", s).duration
-            lo = max(a["poster_start"], 0.0)
-            hi = min(a["poster_end"], clip)
-            if hi - lo < s.poster.min_seconds:
-                hi = min(lo + s.poster.min_seconds, clip)
-            if hi <= lo:
-                raise ValidationError(f"The clip is only {clip:.1f} s long; the poster cannot start at {lo} s.")
-            plan = {"window": {"start": round(lo, 3), "end": round(hi, 3)}, "start_idx": None, "end_idx": None,
-                    "phrase": "", "method": "manual", "notes": ["Window set by the owner"]}
-            (new / "plan.json").write_text(json.dumps(plan, ensure_ascii=False))
+        (new / FILES["plan"]).write_text(json.dumps(plan, ensure_ascii=False))

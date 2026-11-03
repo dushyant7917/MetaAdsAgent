@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Installs the systemd timer that runs the old-data cleanup (metaads.old_data) every day at the hour in
 # schedules.old_data_cleanup_hour_ist (config/settings.yaml), IST. It deletes the files of ads that were uploaded to
-# Meta, dropped or failed long enough ago (old_data in config/settings.yaml), except the work folders of winning hooks that
-# can still be reused. It reads Meta once. Safe to re-run; run it again after changing the schedule or switching between
+# Meta, dropped or failed long enough ago (old_data in config/settings.yaml), except the work folders (hook data) of
+# video ads whose hook is a live winner or whose ad set still runs below the win bar: those can still be reused. It
+# reads Meta once. Safe to re-run; run it again after changing the schedule or switching between
 # dry run and live.
 #   scripts/install_old_data_cleanup_timer.sh           dry run: reports what it would delete, changes nothing
 #   scripts/install_old_data_cleanup_timer.sh --apply   live: really deletes

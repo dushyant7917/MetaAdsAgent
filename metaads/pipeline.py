@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from . import media
+from . import hookfiles, media
 from .bodies import body_folder
 from .config import Settings, load_settings
 from .jobs import FORMAT_IMAGE, FORMAT_VIDEO, REVIEW_PENDING, JobStore
@@ -73,12 +73,14 @@ def default_services(settings: Settings | None = None) -> Services:
     )
 
 
-def _atomic_copy(src: Path, dst: Path) -> None:
-    """Copy via a temp name in the destination folder (a network mount can drop mid-copy)."""
+def _atomic_move(src: Path, dst: Path) -> None:
+    """Move a finished file to its final place via a temp name in the destination folder (a network mount can drop
+    mid-move). The file exists once afterwards: the source is gone."""
     dst.parent.mkdir(parents=True, exist_ok=True)
     part = dst.with_name(dst.name + ".part")
     shutil.copyfile(src, part)
     os.replace(part, dst)
+    src.unlink()
 
 
 def _boot_id() -> str:
@@ -328,21 +330,23 @@ class Pipeline:
             log.exception("notification failed")
 
     # ---------- one ad ----------
-    def run_job(self, job_id: str, chat_id: str | None = None) -> dict[str, Any]:
+    def run_job(self, job_id: str, chat_id: str | None = None) -> None:
         job = self.store.get_job(job_id)
         if job["ad_format"] == FORMAT_IMAGE:
             return self.make_image_ad(job_id, chat_id)
         lang, spoken_text, body_stem, duration = job["language"], job["spoken_text"], job["body"], job["duration"]
-        work = Path(self.s.paths.work_dir) / job_id
+        work = hookfiles.work_folder(self.s, job_id)
         work.mkdir(parents=True, exist_ok=True)
         stage = lambda name: self.store.update_job(job_id, stage=name)
+        # A stage this ad reuses is a file of an earlier ad (never copied, never made again); the others are its own.
+        file = lambda name: hookfiles.existing_stage_file(self.s, job, name, self.store.get_job)
 
-        image = work / "image.png"
+        image = file("image")
         if not image.exists():
             stage("image")
             self.services.image(job["thumbnail_text"], image, IMAGE_REPORTER)
 
-        clip = work / "video.mp4"
+        clip = file("video")
         if not clip.exists():
             stage("video")
             if self.store.video_calls_today() >= self.s.limits.daily_video_cap:
@@ -353,7 +357,7 @@ class Pipeline:
             os.replace(tmp, clip)
         clip_duration = media.probe(clip, self.s).duration
 
-        words_file = work / "words.json"
+        words_file = file("transcribe")
         if not words_file.exists():
             stage("transcribe")
             last_attempt = job["attempts"] >= self.s.limits.job_attempts
@@ -366,7 +370,7 @@ class Pipeline:
             words_file.write_text(json.dumps(words, ensure_ascii=False))
         words = json.loads(words_file.read_text())
 
-        plan_file = work / "plan.json"
+        plan_file = file("plan")
         if not plan_file.exists():
             stage("plan")
             result = self.services.plan(spoken_text, lang, words, clip_duration, job.get("plan_hint"))
@@ -375,7 +379,7 @@ class Pipeline:
         window = PosterWindow(plan["window"]["start"], plan["window"]["end"])
 
         poster = Path(self.s.paths.poster_dir) / lang / "poster_demo.mp4"
-        hook = work / "hook.mp4"
+        hook = file("render_hook")
         if not hook.exists():
             stage("render_hook")
             with CPU_LOCK:
@@ -383,7 +387,7 @@ class Pipeline:
             os.replace(work / "hook.part.mp4", hook)
 
         body = self._find_body(lang, body_stem)
-        ad = work / "ad.mp4"
+        ad = work / hookfiles.MERGED_FILE
         if not ad.exists():
             stage("merge")
             with CPU_LOCK:
@@ -392,30 +396,14 @@ class Pipeline:
 
         stage("publish")
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        hook_dst = Path(self.s.paths.hooks_dir) / lang / f"hook_{stamp}_{job_id}.mp4"
         ad_dst = Path(self.s.paths.ads_dir) / lang / f"ad_{stamp}_{job_id}_{body.stem}.mp4"
-        meta = {
-            "job_id": job_id, "redo_of": job.get("redo_of"), "created": datetime.now().isoformat(timespec="seconds"), "language": lang,
-            "ad_format": FORMAT_VIDEO, "spoken_text": spoken_text, "thumbnail_text": job["thumbnail_text"],
-            "body": body.stem, "video_duration": duration, "clip_seconds": clip_duration,
-            "models": {"image": self.s.models.image, "quality": self.s.models.image_quality,
-                       "video": self.s.models.video, "whisper": self.s.models.whisper, "llm": self.s.models.llm},
-            "duration_estimate": json.loads(job["estimate"]) if job.get("estimate") else None,
-            "measured_speech_end": words[-1]["end"] if words else None,
-            "speech_may_be_cut_off": bool(words) and words[-1]["end"] >= clip_duration - 0.25,
-            "poster_window": plan["window"], "poster_phrase": plan["phrase"], "plan_method": plan["method"],
-            "plan_notes": plan["notes"], "words": words, "hook_file": str(hook_dst), "ad_file": str(ad_dst),
-        }
-        for src, dst in ((hook, hook_dst), (ad, ad_dst)):
-            _atomic_copy(src, dst)
-            dst.with_suffix(".json").write_text(json.dumps(meta, ensure_ascii=False, indent=2))
-        self.store.update_job(job_id, status="done", stage="done", error=None,
-                              hook_path=str(hook_dst), ad_path=str(ad_dst))
+        _atomic_move(ad, ad_dst)                                         # the only copy of the finished ad
+        self.store.update_job(job_id, status="done", stage="done", error=None, ad_path=str(ad_dst))
+        cut_off = bool(words) and words[-1]["end"] >= clip_duration - 0.25
         warn = (headline(WARN, "The voice may be cut off at the end of the hook (the clip was probably too short).")
-                if meta["speech_may_be_cut_off"] else None)
+                if cut_off else None)
         guess = headline(WARN, POSTER_GUESS_NOTE) if plan["method"] == "default" else None
         self._safe(self.notifier.send_video, chat_id, ad_dst, self._caption(job, warn, guess))
-        return meta
 
     def _caption(self, job: dict[str, Any], *notes: str | None, label: str = "") -> str:
         """Telegram caption of a finished ad, one fact per line and always ending with its id (the owner replies with
@@ -426,36 +414,31 @@ class Pipeline:
                      f"{self.s.languages[job['language']]}", f"Says: {job['spoken_text'][:self.s.messages.spoken_chars]}", thumb, *notes,
                      f"id {job['id']}")
 
-    def make_image_ad(self, job_id: str, chat_id: str | None = None, fallback_reason: str | None = None) -> dict[str, Any]:
+    def make_image_ad(self, job_id: str, chat_id: str | None = None, fallback_reason: str | None = None) -> None:
         """The ad is one 4:5 image with the thumbnail text: asked for (ad_format image), or made because the hook
-        video failed (`fallback_reason` is then that failure). No poster, body or audio."""
+        video failed (`fallback_reason` is then that failure). No poster, body or audio. The image goes straight to
+        ads_dir; a redo that only changes the ad copy already has its ad_path (the same file), so nothing is made."""
         job = self.store.get_job(job_id)
         lang = job["language"]
-        work = Path(self.s.paths.work_dir) / job_id
-        work.mkdir(parents=True, exist_ok=True)
-        image = work / "image_ad.png"
-        if not image.exists():
-            self.store.update_job(job_id, stage="image_ad")
-            tmp = work / "image_ad.part.png"
-            self.services.image(job["thumbnail_text"], tmp, IMAGE_AD)
-            os.replace(tmp, image)
-
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        ad_dst = Path(self.s.paths.ads_dir) / lang / f"ad_{stamp}_{job_id}_image.png"
-        meta = {"job_id": job_id, "redo_of": job.get("redo_of"), "created": datetime.now().isoformat(timespec="seconds"),
-                "language": lang, "ad_format": FORMAT_IMAGE, "spoken_text": job["spoken_text"],
-                "thumbnail_text": job["thumbnail_text"], "fallback_reason": fallback_reason,
-                "models": {"image": self.s.models.image, "quality": self.s.models.image_quality},
-                "image_ad": dict(self.s.images[IMAGE_AD]), "ad_file": str(ad_dst)}
-        _atomic_copy(image, ad_dst)
-        ad_dst.with_suffix(".json").write_text(json.dumps(meta, ensure_ascii=False, indent=2))
-        self.store.update_job(job_id, status="done", stage="done", error=None, ad_path=str(ad_dst), hook_path=None,
+        if job["ad_path"] and Path(job["ad_path"]).is_file():
+            ad_dst = Path(job["ad_path"])
+        else:
+            work = hookfiles.work_folder(self.s, job_id)
+            work.mkdir(parents=True, exist_ok=True)
+            image = work / hookfiles.IMAGE_AD_FILE
+            if not image.exists():
+                self.store.update_job(job_id, stage="image_ad")
+                tmp = work / "image_ad.part.png"
+                self.services.image(job["thumbnail_text"], tmp, IMAGE_AD)
+                os.replace(tmp, image)
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            ad_dst = Path(self.s.paths.ads_dir) / lang / f"ad_{stamp}_{job_id}_image.png"
+            _atomic_move(image, ad_dst)
+        self.store.update_job(job_id, status="done", stage="done", error=None, ad_path=str(ad_dst),
                               ad_format=FORMAT_IMAGE, fallback_reason=fallback_reason)
         why = headline(WARN, f"The hook video failed: {fallback_reason[:self.s.messages.reason_chars]}") if fallback_reason else None
         self._safe(self.notifier.send_photo, chat_id, ad_dst, self._caption(job, why, label=f"{IMAGE} Image ad · "))
-        return meta
 
-    # ---------- status ----------
     def status(self, batch_id: str) -> dict[str, Any]:
         jobs = self.store.batch_jobs(batch_id)
         counts = {k: sum(j["status"] == k for j in jobs) for k in ("queued", "running", "done", "failed")}
@@ -463,4 +446,4 @@ class Pipeline:
                 "finished": counts["queued"] + counts["running"] == 0,
                 "ads": [{"n": j["idx"] + 1, "job_id": j["id"], "language": j["language"], "status": j["status"], "stage": j["stage"],
                          "ad_format": j["ad_format"], "fallback_reason": j["fallback_reason"],
-                         "ad_path": j["ad_path"], "hook_path": j["hook_path"], "error": j["error"]} for j in jobs]}
+                         "ad_path": j["ad_path"], "error": j["error"]} for j in jobs]}
