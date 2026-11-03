@@ -33,7 +33,7 @@ def changed(**sections) -> Settings:
 
 # ---------- schedules ----------
 def test_the_daily_plan_time_in_ist_becomes_a_utc_cron_expression():
-    assert schedule.plan_cron_utc(BASE) == "30 6 * * *"                                   # 12:00 IST
+    assert schedule.plan_cron_utc(BASE) == "30 12 * * *"                                  # 18:00 IST
     assert schedule.plan_cron_utc(changed(schedules={"daily_plan_ist": "00:15"})) == "45 18 * * *"   # the day before in UTC
     assert schedule.plan_cron_utc(changed(schedules={"daily_plan_ist": "05:30"})) == "0 0 * * *"
 

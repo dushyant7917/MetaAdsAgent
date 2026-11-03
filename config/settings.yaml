@@ -33,7 +33,7 @@ language_scripts:     # code -> Unicode script name (as in unicodedata.name) a h
 schedules:                     # when the recurring jobs run: the installers (scripts/install_*) and the planner's forecast both read these
   autopause_every_hours: 2     # metaads.autopause; must divide 24, it runs on those hours of the server clock (UTC)
   budget_increase_hour_ist: 5  # metaads.budget, once a day at this hour IST
-  daily_plan_ist: "12:00"      # the Hermes cron job that plans the next launch's ads (HH:MM IST)
+  daily_plan_ist: "18:00"      # the Hermes cron job that plans the next launch's ads (HH:MM IST)
   orphan_data_cleanup_hour_ist: 3   # metaads.orphan_data, once a day
   old_data_cleanup_hour_ist: 4      # metaads.old_data, once a day (reads Meta once)
 
