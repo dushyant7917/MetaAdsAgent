@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY, batch_id TEXT, idx INTEGER, language TEXT, spoken_text TEXT, thumbnail_text TEXT, body TEXT,
   duration INTEGER, status TEXT, stage TEXT, error TEXT, hook_path TEXT, ad_path TEXT, attempts INTEGER DEFAULT 0,
   created REAL, updated REAL, estimate TEXT, owner TEXT, redo_of TEXT, plan_hint TEXT, review TEXT, reviewed REAL,
-  ad_format TEXT DEFAULT 'video', fallback_reason TEXT, reused_stages INTEGER DEFAULT 0
+  ad_format TEXT DEFAULT 'video', reused_stages INTEGER DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS redo_plans (
   id TEXT PRIMARY KEY, job_id TEXT, args TEXT, status TEXT, created REAL
@@ -47,7 +47,7 @@ PLAN_PENDING, PLAN_APPROVED, PLAN_REJECTED, PLAN_SUPERSEDED = "pending", "approv
 REDO_PENDING = "pending"                                             # a redo plan the owner has not answered yet
 REVIEW_STATES = {REVIEW_PENDING, REVIEW_APPROVED, REVIEW_DROPPED, REVIEW_REDONE}
 JOB_FIELDS = {"status", "stage", "error", "hook_path", "ad_path", "attempts", "duration", "body", "estimate", "owner",
-              "ad_format", "fallback_reason", "reused_stages"}
+              "ad_format", "reused_stages"}
 # What kind of file an ad is: a hook + body video, or a single 4:5 image.
 FORMAT_VIDEO, FORMAT_IMAGE = "video", "image"
 
@@ -65,7 +65,7 @@ class JobStore:
                 have = (have - {"text"}) | {"spoken_text"}
             for col, kind in (("estimate", "TEXT"), ("owner", "TEXT"), ("redo_of", "TEXT"), ("plan_hint", "TEXT"),
                               ("review", "TEXT"), ("reviewed", "REAL"), ("thumbnail_text", "TEXT"),
-                              ("ad_format", "TEXT DEFAULT 'video'"), ("fallback_reason", "TEXT"),
+                              ("ad_format", "TEXT DEFAULT 'video'"),
                               ("reused_stages", "INTEGER DEFAULT 0")):
                 if col not in have:
                     c.execute(f"ALTER TABLE jobs ADD COLUMN {col} {kind}")    # database created before this column

@@ -13,8 +13,9 @@ ads on Meta is the `meta-upload` skill.
 `create_ads` runs the whole chain for each ad: a reporter image (with the thumbnail text), a talking-reporter video
 (Veo) saying the spoken text, the poster demo shown over the right spoken words, then the body video joined with a
 cross-fade. Files are saved under `Hooks/<language>` and `Ads/<language>` and each finished ad is sent to this chat
-automatically. An ad with `ad_format: "image"` is just one 4:5 image with the thumbnail text (no video, cheaper); a
-video ad whose hook video fails (after a retry) is made as that image ad instead and arrives as a photo marked "Image ad".
+automatically. An ad with `ad_format: "image"` is just one 4:5 image with the thumbnail text (no video, cheaper), made
+only when the owner asks for it (or the daily plan has one); it arrives as a photo marked "Image ad". A video ad whose hook
+video fails (after a retry) fails: it is never replaced by an image ad.
 
 ## Reading the request
 Languages are codes: hi (Hindi), bn (Bengali), gu (Gujarati), kn (Kannada), mr (Marathi), ta (Tamil),

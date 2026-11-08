@@ -234,25 +234,6 @@ def test_asking_for_a_body_on_an_image_ad_turns_it_into_a_video_ad(env):
     assert any("Gemini" in step["what"] for step in plan["will_redo"] if step["step"] == "duration")
 
 
-def test_a_fallback_image_ad_can_try_the_video_again_from_the_stored_reporter_image(env):
-    fakes = Fakes(video_always_fails=True)
-    p, rec = _pipeline(env, fakes)
-    batch = p.submit([dict(HI)], chat_id="42", background=False)
-    job = p.status(batch)["ads"][0]["job_id"]
-    assert p.store.get_job(job)["ad_format"] == "image" and p.store.get_job(job)["fallback_reason"]
-    details = RedoPlanner(p).details(job)
-    assert details["ad_format"] == "image" and "Veo is down" in details["fallback_reason"]
-    fakes.video_always_fails = False
-    rp = RedoPlanner(p)
-    plan = rp.plan(job, ["video"])
-    assert steps(plan["will_reuse"])[0] == "image" and plan["costs"]["gpt_image_calls"] == 0
-    done = rp.approve(plan["plan_id"])
-    _wait(p, done)
-    new = p.store.get_job(done["job_id"])
-    assert new["ad_format"] == "video" and new["fallback_reason"] is None and new["redo_of"] == job
-    assert [k for _, k in fakes.image_requests] == ["reporter", "image_ad"]            # no new reporter image was made
-
-
 def _wait(p, done):
     end = time.time() + 60
     while not p.status(done["batch_id"])["finished"] and time.time() < end:

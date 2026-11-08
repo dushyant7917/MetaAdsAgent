@@ -23,8 +23,8 @@ Each skill holds the step-by-step instructions for its tools. Making ads always 
   when a language or the hook text is missing or you cannot tell which it is. The exception is the daily plan
   (`ad-daily-plan`): its ads are made only after the owner approves the plan (`approve_ad_plan` is that request).
 - Do not edit the texts the owner gives. Pass them exactly as written.
-- An ad is a video (hook + body) or a single 4:5 image. If the hook video cannot be made even after a retry, the ad
-  becomes an image ad on its own and says so; it is reviewed and uploaded like any other ad.
+- An ad is a video (hook + body) or a single 4:5 image. Make an image ad only when the owner asks for one (or the
+  daily plan has one). If a hook video cannot be made even after a retry, the ad fails: never swap in an image ad.
 - `create_ads` returns at once. The finished ads arrive in the chat by themselves, one by one, plus a
   summary at the end. Reply with one short line ("Making 3 ads: hi, ta, hi") and stop. Do not poll.
   Use `get_batch_status` only when the owner asks how it is going.

@@ -34,11 +34,9 @@ and `approve_redo` at once (steps 1 to 3 below still apply; skip steps 4 and 5).
    Whisper and the poster planner read the Veo clip, so they are redone whenever the clip is new, and skipped
    whenever the clip is kept. `plan_redo` works this out; you do not need to.
 
-   Image ads (`ad_format: image` in `get_ad_details` / `list_ads`): an image ad the owner asked for can only redo
+   Image ads (`ad_format: image` in `get_ad_details` / `list_ads`): an image ad can only redo
    `thumbnail_text` (new image), `image` (new image) or `spoken_text` (only the Meta ad text; the image is kept), and
-   stays an image ad. Any other change (a body, the video) turns it into a video ad. An image ad that has a
-   `fallback_reason` was made because the hook video failed: `["video"]` tries the Veo clip again from the stored
-   reporter image, and the result is a video ad.
+   stays an image ad. Any other change (a body, the video) turns it into a video ad.
 3. **Plan.** Call `plan_redo(...)`. It runs nothing and spends nothing.
 4. **Show the plan** in plain words: what will be redone, what will be reused from the old ad, and the cost
    (Veo clip, image). Keep it short, then ask for approval. Example: "I'll redo: new image, new Veo clip,

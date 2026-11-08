@@ -95,8 +95,8 @@ def create_ads(items: list[dict[str, Any]], chat_id: str | None = None, review: 
       language: code from list_languages (hi, bn, gu, kn, mr, ta, te).
       spoken_text: the dialogue the reporter speaks (as the user wrote it). It is also the Meta ad text.
       thumbnail_text: optional words written on the thumbnail image; when omitted the image shows the spoken_text.
-      ad_format: "video" (default) or "image" (one 4:5 image with the thumbnail text, no video; cheaper). A video ad
-        whose hook video fails is turned into an image ad automatically.
+      ad_format: "video" (default) or "image" (one 4:5 image with the thumbnail text, no video; cheaper). Use "image"
+        only when the owner asked for an image ad.
       body: optional body video name or unique part of it (e.g. "teal"); default navy-darkyellow-yellowbox.
       duration: optional clip length 4, 6 or 8 seconds; by default chosen from the spoken text length and language.
     review: True (default) = the finished ads wait for the owner to approve, drop or give feedback before anything
@@ -137,7 +137,7 @@ def list_ads(limit: int | None = None, awaiting_review: bool = False) -> dict:
         meta = store.get_meta_upload(j["id"]) or {}
         ads.append({"job_id": j["id"], "language": j["language"], "spoken_text": j["spoken_text"][:S.messages.tool_text_chars],
                     "thumbnail_text": j["thumbnail_text"][:S.messages.tool_text_chars], "ad_format": j["ad_format"],
-                    "fallback_reason": j["fallback_reason"], "status": j["status"],
+                    "status": j["status"],
                     "body": j["body"], "ad_path": j["ad_path"], "redo_of": j["redo_of"], "review": j["review"],
                     "meta_status": meta.get("status"), "meta_ad_id": meta.get("ad_id")})
     return {"ads": ads}
@@ -214,8 +214,7 @@ def plan_redo(job_id: str, changes: list[str], new_spoken_text: str | None = Non
     image, needs `new_thumbnail_text`; a new image, so redoes everything), "spoken_text" (new dialogue, needs
     `new_spoken_text`; keeps the image, makes a new Veo clip). Give the smallest set that fixes what the owner said is
     wrong. An image ad (see list_ads ad_format) can only redo "thumbnail_text", "image" and "spoken_text" and stays an
-    image ad; any other change makes it a video ad. A video ad whose video failed (an image ad with a fallback_reason)
-    is redone as a video ad: "video" tries the Veo clip again.
+    image ad; any other change makes it a video ad.
     Poster timing: pass poster_start/poster_end (seconds in the hook) for an exact window, or poster_feedback
     (the owner's words, e.g. "show it when she says the app name") to let the planner choose again.
     """

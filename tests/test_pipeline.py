@@ -171,11 +171,12 @@ def test_failure_in_one_item_does_not_stop_the_others(env):
     batch = p.submit([{"language": "hi", "spoken_text": "ok one"}, {"language": "hi", "spoken_text": "BOOM two"},
                       {"language": "ta", "spoken_text": "ok three"}], background=False)
     st = p.status(batch)
-    assert (st["done"], st["failed"]) == (3, 0)                       # the blocked item became an image ad
-    assert [a["ad_format"] for a in st["ads"]] == ["video", "image", "video"]
-    assert fakes.calls["video"] == 3                                  # the blocked item was NOT retried
-    assert "content policy" in st["ads"][1]["fallback_reason"]
-    assert rec.texts[-1].startswith("✅ 3 of 3 ads created\n\n1 of them are image ads (1 because") and "\n\n" in rec.texts[-1]
+    assert (st["done"], st["failed"]) == (2, 1)                       # the blocked item failed; it did not become an image ad
+    assert [a["status"] for a in st["ads"]] == ["done", "failed", "done"]
+    assert [a["ad_format"] for a in st["ads"]] == ["video", "video", "video"]
+    assert fakes.calls["video"] == 3 and fakes.calls["image"] == 3    # the blocked item was NOT retried, no image ad made
+    assert "content policy" in st["ads"][1]["error"]
+    assert rec.texts[-1].startswith("⚠️ 2 of 3 ads created") and "image ads" not in rec.texts[-1]
 
 
 def test_failure_in_a_stage_other_than_the_video_is_still_a_failure(env):
@@ -214,49 +215,17 @@ def test_an_empty_transcript_is_not_cached_so_each_earlier_attempt_asks_whisper_
     assert fakes.transcribe_calls == 2                                # attempts 1 and 2 asked; attempt 3 skipped Whisper
 
 
-def test_when_the_hook_video_fails_even_after_the_retry_an_image_ad_is_made(env):
+def test_when_the_hook_video_fails_even_after_the_retry_the_ad_fails_and_no_image_ad_is_made(env):
     fakes = Fakes(video_always_fails=True)
     p, rec = _pipeline(env, fakes)
     batch = p.submit([{"language": "hi", "spoken_text": "Dialogue words", "thumbnail_text": "Headline"}],
                      chat_id="42", background=False)
     st = p.status(batch)["ads"][0]
-    assert fakes.calls["video"] == 2                                  # tried, retried, then gave up on the video
+    assert fakes.calls["video"] == 2                                  # tried, retried, then gave up
     job = p.store.get_job(st["job_id"])
-    assert (job["status"], job["ad_format"]) == ("done", "image") and "Veo is down" in job["fallback_reason"]
-    assert job["review"] == "pending"                                 # it still waits for the owner's decision
-    assert fakes.image_requests == [("Headline", "reporter"), ("Headline", "image_ad")]
-    s, _ = env
-    info = media.probe(Path(job["ad_path"]), s)
-    assert (info.width, info.height) == (1024, 1280) and job["ad_path"].endswith("_image.png")
-    assert not list(Path(s.paths.ads_dir).rglob("*.json")) and not (Path(s.paths.work_dir) / job["id"] / "image_ad.png").exists()
-    assert not rec.videos and len(rec.photos) == 1
-    caption = rec.photos[0][1]
-    assert caption.startswith("🖼 Image ad · Ad 1/1 · Hindi\nSays: Dialogue words\nThumbnail: Headline\n⚠️ The hook video failed: ")
-    assert caption.endswith(f"\nid {job['id']}")                                                  # the id stays the last line
-    assert "Waiting for your decision" in rec.texts[-1]
-
-
-def test_the_image_ad_fallback_failing_too_fails_the_ad_with_both_reasons(env):
-    fakes = Fakes(video_always_fails=True)
-    real_services = fakes.services
-
-    def services(s):
-        sv = real_services(s)
-        inner = sv.image
-
-        def image(text, out, kind="reporter"):
-            if kind == "image_ad":
-                raise RuntimeError("image API exploded")
-            return inner(text, out, kind)
-        sv.image = image
-        return sv
-
-    fakes.services = services
-    p, rec = _pipeline(env, fakes)
-    batch = p.submit([{"language": "hi", "spoken_text": "Dialogue words"}], background=False)
-    job = p.status(batch)["ads"][0]
-    assert job["status"] == "failed" and "Veo is down" in job["error"] and "image-ad fallback also failed" in job["error"]
-    assert "image API exploded" in job["error"] and not rec.photos
+    assert (job["status"], job["ad_format"], job["stage"]) == ("failed", "video", "video") and "Veo is down" in job["error"]
+    assert fakes.image_requests == [("Headline", "reporter")]         # no image ad was made
+    assert not rec.photos and not rec.videos and "Veo is down" in rec.texts[-1]
 
 
 def test_an_image_ad_can_be_asked_for_and_makes_no_video_duration_or_cap_use(env):
@@ -265,7 +234,7 @@ def test_an_image_ad_can_be_asked_for_and_makes_no_video_duration_or_cap_use(env
     batch = p.submit([{"language": "ta", "spoken_text": "Dialogue words", "thumbnail_text": "Headline", "ad_format": "image"}],
                      background=False)
     job = p.store.get_job(p.status(batch)["ads"][0]["job_id"])
-    assert (job["status"], job["ad_format"], job["fallback_reason"], job["duration"]) == ("done", "image", None, None)
+    assert (job["status"], job["ad_format"], job["duration"]) == ("done", "image", None)
     assert fakes.calls == {"image": 1, "video": 0} and fakes.duration_calls == []
     assert fakes.image_requests == [("Headline", "image_ad")] and p.store.video_calls_today() == 0
     assert len(rec.photos) == 1 and rec.photos[0][1].startswith("🖼 Image ad · Ad 1/1 · Tamil\nSays: Dialogue words\nThumbnail: Headline\nid ")

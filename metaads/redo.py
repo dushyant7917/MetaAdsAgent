@@ -61,7 +61,7 @@ class RedoPlanner:
         out: dict[str, Any] = {
             "job_id": job_id, "ad_number_in_batch": job["idx"] + 1, "language": job["language"],
             "spoken_text": job["spoken_text"], "thumbnail_text": job["thumbnail_text"], "ad_format": job["ad_format"],
-            "fallback_reason": job["fallback_reason"], "body": job["body"], "clip_seconds_requested": job["duration"], "status": job["status"],
+            "body": job["body"], "clip_seconds_requested": job["duration"], "status": job["status"],
             "stage": job["stage"], "ad_path": job["ad_path"], "redo_of": job["redo_of"],
             "stored_stages": [s for s in FILES if have[s]],
         }
@@ -113,8 +113,8 @@ class RedoPlanner:
             raise ValidationError("poster_start must be 0 or more and before poster_end.")
         if poster_start is not None and poster_feedback:
             raise ValidationError("Give either an exact poster window or feedback for the planner, not both.")
-        asked_image_ad = job["ad_format"] == FORMAT_IMAGE and not job["fallback_reason"]
-        if asked_image_ad and set(changes) <= IMAGE_AD_CHANGES:
+        is_image_ad = job["ad_format"] == FORMAT_IMAGE
+        if is_image_ad and set(changes) <= IMAGE_AD_CHANGES:
             return self._plan_image_ad(job, changes, new_spoken_text, new_thumbnail_text)
         checked = self.p.validate_item({"language": job["language"], "spoken_text": new_spoken_text or job["spoken_text"],
                                         "thumbnail_text": new_thumbnail_text or job["thumbnail_text"],
@@ -122,7 +122,7 @@ class RedoPlanner:
 
         start = min(STAGES.index(CHANGES[c]) for c in changes)
         notes: list[str] = []
-        if asked_image_ad:
+        if is_image_ad:
             notes.append("This was an image ad; the redo makes a video ad from the same hook.")
         for i in range(start):                                   # a stage to reuse must still be on disk
             if not self._file(job, STAGES[i]).exists():

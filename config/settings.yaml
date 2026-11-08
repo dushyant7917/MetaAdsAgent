@@ -57,7 +57,7 @@ images:                        # gpt-image output: `size` is asked from the API,
     size: 1024x1536            # closest 2:3 portrait; fitted into 9:16 with black bars (top/bottom)
     width: 720
     height: 1280
-  image_ad:                    # the single-image ad (made when the hook video fails, or when an image ad is asked for)
+  image_ad:                    # the single-image ad (made when an image ad is asked for or the daily plan picks one)
     aspect: "4:5"
     size: 1024x1280            # exactly 4:5 if gpt-image-2 accepts it (see step 0 of the image-ad work), else a supported size padded to 4:5
     width: 1024
@@ -152,7 +152,7 @@ limits:
   max_meta_upload: 10          # ads per upload_ads request
   image_rpm: 140
   video_rpm: 4
-  job_attempts: 2              # a failing ad is tried this often; stages already done are not repeated (after the last try a failed video becomes an image ad)
+  job_attempts: 2              # a failing ad is tried this often; stages already done are not repeated (after the last try the ad fails)
   heartbeat_attempts: 2        # one healthchecks.io ping is tried this often
   list_ads_default: 10
   list_ads_max: 30
@@ -194,7 +194,7 @@ ad_planning:                   # metaads.planning: how many new ads the rest of 
   retire_hook_after_failures: 3 # a winning hook stops being reused once its newest this-many decided ad sets in a row were paused before performing_min_results; a later win resets it
   tie_break_order: [hi, te, kn, mr, gu, bn]   # language codes: who gets the extra ads when languages tie (all weigh the same); unlisted ones come last
   exploit_share: 0.6           # share of new ads that put a proven hook on another body; the rest are new hooks
-  min_format_share: 0.10       # new hooks come as video or image ads by their win rates, but each format gets at least this share, so the weaker one keeps being tried
+  format_give_up_after: 10     # a format with this many decided ad sets and no win gets no new hooks while the other format has won (a format with wins is split by win rate)
   hook_history_limit: 5        # winning and failing hooks per list that get_hook_performance returns
   gloss_language: hi           # the language the owner reads: hooks in other languages are shown with a translation into it
   gloss_label: "हिंदी"          # the word that introduces that translation in the plan message: (हिंदी: ...)
@@ -210,7 +210,6 @@ ad_planning:                   # metaads.planning: how many new ads the rest of 
 messages:                      # how much of a text goes into a Telegram message or a tool answer
   spoken_chars: 120            # the dialogue in an ad's caption
   thumbnail_chars: 80          # the thumbnail words in an ad's caption
-  reason_chars: 150            # why a video failed
   tool_text_chars: 100         # a text in the answer of list_ads
   ad_label_chars: 80           # an ad's name in a redo plan
   hook_label_chars: 30         # a hook's name in a plan error

@@ -219,9 +219,7 @@ class Pipeline:
         ok = [j for j in jobs if j["status"] == "done"]
         failed = [j for j in jobs if j["status"] == "failed"]
         images = sum(j["ad_format"] == FORMAT_IMAGE for j in ok)
-        fallbacks = sum(bool(j["fallback_reason"]) for j in ok)
-        image_note = (f"{images} of them are image ads" + (f" ({fallbacks} because the hook video failed)." if fallbacks else ".")
-                      if images else None)
+        image_note = f"{images} of them are image ads." if images else None
         waiting = any(j["status"] == "done" and j["review"] == REVIEW_PENDING for j in jobs)
         self._safe(self.notifier.send_report, chat_id, blocks(
             headline(WARN if failed else OK, f"{len(ok)} of {len(jobs)} ads created"), image_note,
@@ -308,16 +306,6 @@ class Pipeline:
                 if final:
                     break
         job = self.store.get_job(job_id)
-        if job["stage"] == "video" and job["ad_format"] == FORMAT_VIDEO:        # the hook video could not be made
-            reason = job["error"]
-            try:
-                self.make_image_ad(job_id, chat_id, fallback_reason=reason)
-                return
-            except Exception as exc:
-                log.exception("job %s image-ad fallback failed", job_id)
-                self.store.update_job(job_id, status="failed",
-                                      error=f"{reason}; the image-ad fallback also failed: {type(exc).__name__}: {exc}")
-                job = self.store.get_job(job_id)
         self._safe(self.notifier.send_report, chat_id, blocks(
             headline(FAIL, f"Ad {job['idx'] + 1} ({self.s.languages[job['language']]}) failed at stage '{job['stage']}'"),
             job["error"]))
@@ -414,10 +402,9 @@ class Pipeline:
                      f"{self.s.languages[job['language']]}", f"Says: {job['spoken_text'][:self.s.messages.spoken_chars]}", thumb, *notes,
                      f"id {job['id']}")
 
-    def make_image_ad(self, job_id: str, chat_id: str | None = None, fallback_reason: str | None = None) -> None:
-        """The ad is one 4:5 image with the thumbnail text: asked for (ad_format image), or made because the hook
-        video failed (`fallback_reason` is then that failure). No poster, body or audio. The image goes straight to
-        ads_dir; a redo that only changes the ad copy already has its ad_path (the same file), so nothing is made."""
+    def make_image_ad(self, job_id: str, chat_id: str | None = None) -> None:
+        """The ad is one 4:5 image with the thumbnail text, made only when the owner asked for an image ad
+        (ad_format image). No poster, body or audio. The image goes straight to ads_dir; a redo that only changes the ad copy already has its ad_path (the same file), so nothing is made."""
         job = self.store.get_job(job_id)
         lang = job["language"]
         if job["ad_path"] and Path(job["ad_path"]).is_file():
@@ -435,9 +422,8 @@ class Pipeline:
             ad_dst = Path(self.s.paths.ads_dir) / lang / f"ad_{stamp}_{job_id}_image.png"
             _atomic_move(image, ad_dst)
         self.store.update_job(job_id, status="done", stage="done", error=None, ad_path=str(ad_dst),
-                              ad_format=FORMAT_IMAGE, fallback_reason=fallback_reason)
-        why = headline(WARN, f"The hook video failed: {fallback_reason[:self.s.messages.reason_chars]}") if fallback_reason else None
-        self._safe(self.notifier.send_photo, chat_id, ad_dst, self._caption(job, why, label=f"{IMAGE} Image ad · "))
+                              ad_format=FORMAT_IMAGE)
+        self._safe(self.notifier.send_photo, chat_id, ad_dst, self._caption(job, None, label=f"{IMAGE} Image ad · "))
 
     def status(self, batch_id: str) -> dict[str, Any]:
         jobs = self.store.batch_jobs(batch_id)
@@ -445,5 +431,5 @@ class Pipeline:
         return {"batch_id": batch_id, "total": len(jobs), **counts,
                 "finished": counts["queued"] + counts["running"] == 0,
                 "ads": [{"n": j["idx"] + 1, "job_id": j["id"], "language": j["language"], "status": j["status"], "stage": j["stage"],
-                         "ad_format": j["ad_format"], "fallback_reason": j["fallback_reason"],
+                         "ad_format": j["ad_format"],
                          "ad_path": j["ad_path"], "error": j["error"]} for j in jobs]}

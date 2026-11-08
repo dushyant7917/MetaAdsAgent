@@ -224,10 +224,29 @@ def test_the_format_that_wins_more_gets_more_new_hooks():
     assert "image ads" in video_better["format_reason"] and video_better["format_stats"]["video"]["wins"] == 8
 
 
-def test_neither_format_drops_below_the_floor():
-    stats = format_stats(_decided("video", 30, 0) + _decided("image", 0, 30), S)
-    assert image_share(stats, S) == pytest.approx(0.10)                                # the floor, not the 5% the rates give
-    assert image_share(format_stats(_decided("video", 0, 30) + _decided("image", 30, 0), S), S) == pytest.approx(0.90)
+def test_the_split_is_purely_on_merit_with_no_floor():
+    stats = format_stats(_decided("video", 30, 10) + _decided("image", 1, 39), S)       # image has won once: split by rates
+    assert image_share(stats, S) == pytest.approx(stats["image"]["win_rate"] / (stats["image"]["win_rate"] + stats["video"]["win_rate"]))
+    assert 0 < image_share(stats, S) < 0.10                                            # no floor lifts it
+
+
+def test_a_format_that_never_wins_gets_no_new_hooks_while_the_other_wins():
+    give_up = S.ad_planning.format_give_up_after
+    stats = format_stats(_decided("video", 8, 2) + _decided("image", 0, give_up), S)
+    assert image_share(stats, S) == 0
+    assert image_share(format_stats(_decided("video", 0, give_up) + _decided("image", 8, 2), S), S) == 1
+    assert image_share(format_stats(_decided("video", 0, give_up) + _decided("image", 0, give_up), S), S) == pytest.approx(0.5)
+    assert image_share(format_stats(_decided("video", 8, 2) + _decided("image", 0, give_up - 1), S), S) > 0   # not enough tries yet
+    plan = build_plan(inputs(_decided("video", 8, 2) + _decided("image", 0, give_up)), S)
+    assert sum(c["new_hook_image_ads"] for c in plan["campaigns"]) == 0 and sum(c["new_hook_video_ads"] for c in plan["campaigns"]) > 0
+    assert "no image ads" in plan["format_reason"]
+
+
+def test_the_video_cap_drops_new_hooks_instead_of_making_image_ads_that_do_not_win():
+    losing = _decided("video", 8, 2) + _decided("image", 0, S.ad_planning.format_give_up_after)
+    plan = build_plan(inputs(losing, videos=BASE["limits"]["daily_video_cap"] - 2), S)
+    assert sum(c["new_hook_image_ads"] for c in plan["campaigns"]) == 0 and sum(c["new_hook_video_ads"] for c in plan["campaigns"]) == 2
+    assert plan["new_ads_total"] == sum(c["new_ads"] for c in plan["campaigns"]) and any("image ads have not won" in n for n in plan["notes"])
 
 
 def test_with_no_history_new_hooks_split_evenly_and_the_split_adds_up():

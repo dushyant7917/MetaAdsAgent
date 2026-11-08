@@ -8,7 +8,7 @@
   new ads          = (left - committed - reserve) / cost, the reserve being a share of the budget left, spread over the launch days (from the next 06:00 IST start
                      to month end) and split per language into proven-hook ads (a winning hook on a body it has not
                      had) and new-hook ads (a new hook text on the default body, as a video or an image ad: the
-                     format that has been winning gets more, each keeps at least ad_planning.min_format_share)
+                     format that has been winning gets more; one that has not won in ad_planning.format_give_up_after decided ad sets gets none)
 
 Meta calls per run: three reads (ad sets with lifetime insights, daily insights of the last days, this month's spend).
 Run `python -m metaads.planning` for the JSON; the plan_new_ads MCP tool returns the same.
@@ -268,8 +268,8 @@ def build_plan(inp: Inputs, settings: Settings) -> dict:
     for lang in order:
         proven = min(len(candidates[lang]), round(cfg.exploit_share * shares[lang]))
         split[lang] = (proven, shares[lang] - proven)
-    # New hooks come as video or image ads. The format that wins more gets more; both always get a share, so the
-    # weaker one keeps being tried. Rounded once over all languages, then spread by who has the most new hooks.
+    # New hooks come as video or image ads, split purely by win rate (a format that has not won at all is dropped:
+    # image_share). Rounded once over all languages, then spread by who has the most new hooks.
     stats = format_stats(inp.adsets, settings)
     share = image_share(stats, settings)
     fresh_total = sum(fresh for _, fresh in split.values())
@@ -281,7 +281,11 @@ def build_plan(inp: Inputs, settings: Settings) -> dict:
         proven, fresh = split[lang]
         image = images.get(lang, 0)
         video = fresh - image
-        if video > video_room:                                   # only videos cost a Veo call, and the day's cap is shared
+        if video > video_room and share == 0:                    # image ads do not win: fewer ads, not image ads for the sake of it
+            notes.append(f"{lang}: {video - video_room} new hooks dropped, the daily video cap "
+                         f"({settings.limits.daily_video_cap}) is reached and image ads have not won.")
+            fresh, video = fresh - (video - video_room), video_room
+        elif video > video_room:                                 # only videos cost a Veo call, and the day's cap is shared
             image, video = image + video - video_room, video_room
             notes.append(f"{lang}: some new hooks became image ads because of the daily video cap "
                          f"({settings.limits.daily_video_cap}).")

@@ -68,17 +68,25 @@ def format_stats(adsets: list[AdSet], settings: Settings) -> dict[str, dict]:
 
 
 def image_share(stats: dict[str, dict], settings: Settings) -> float:
-    """Share of new-hook ads to make as image ads: the image win rate against both, never below min_format_share
-    for either format so the weaker one keeps being tried."""
-    floor = settings.ad_planning.min_format_share
-    image, video = stats[FORMAT_IMAGE]["win_rate"], stats[FORMAT_VIDEO]["win_rate"]
-    return min(max(image / (image + video), floor), 1 - floor)
+    """Share of new-hook ads to make as image ads, purely on merit: the image win rate against both. A format that
+    has had format_give_up_after decided ad sets without a single win gets none while the other format has won."""
+    image, video = stats[FORMAT_IMAGE], stats[FORMAT_VIDEO]
+    give_up = settings.ad_planning.format_give_up_after
+    if image["decided"] >= give_up and not image["wins"] and video["wins"]:
+        return 0.0
+    if video["decided"] >= give_up and not video["wins"] and image["wins"]:
+        return 1.0
+    return image["win_rate"] / (image["win_rate"] + video["win_rate"])
 
 
 def format_reason(stats: dict[str, dict], share: float) -> str:
     v, i = stats[FORMAT_VIDEO], stats[FORMAT_IMAGE]
-    return (f"video ads: {v['wins']} of {v['decided']} decided ad sets won; image ads: {i['wins']} of {i['decided']}; "
-            f"so {share:.0%} of new hooks are image ads")
+    outcome = (f"video ads: {v['wins']} of {v['decided']} decided ad sets won; image ads: {i['wins']} of {i['decided']}; ")
+    if share == 0:
+        return outcome + "so no image ads this time, only video ads"
+    if share == 1:
+        return outcome + "so no video ads this time, only image ads"
+    return outcome + f"so {share:.0%} of new hooks are image ads"
 
 
 def hook_outcomes(adsets: list[AdSet], settings: Settings, language_name: str | None = None,
