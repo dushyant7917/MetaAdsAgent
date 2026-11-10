@@ -185,6 +185,8 @@ old_data:                      # metaads.old_data, runs as set in schedules (scr
 
 ad_planning:                   # metaads.planning: how many new ads the rest of the month can afford. Amounts here are Rs, not paise
   monthly_budget_inr: 200000   # Rs 2,00,000 for all managed campaigns together; a new ad set's daily budget is meta.daily_budget
+  languages: [hi]              # languages to plan ads for (omitted = all managed campaigns)
+  formats: [video]             # ad formats to suggest in plans: [video], [image], or both [video, image]
   performing_min_results: 50   # an ad set that reached this many results is a winner (autopause did not stop it on the way), and its hook is proven; a later pause does not undo that
   reserve_pct: 20              # of the budget left, kept unspent for cost swings and ad sets that overdeliver (first 3 weeks)
   late_reserve_pct: 10         # the same, from day late_month_from_day on: less time is left for the forecast to be wrong

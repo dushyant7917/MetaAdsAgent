@@ -174,3 +174,26 @@ def test_the_owners_language_and_its_label_come_from_the_settings(tmp_path):
     # and a Tamil hook needs none any more
     ap.plan_new_ads = lambda: plan_of(campaign("Tamil", video=1))
     assert ap.propose([hook("ta", spoken="நீங்கள் news reporter என்றால் இந்த app உங்களுக்கு தான்!", thumb="news reporter என்றால் இந்த app")])["proposed"] is True
+
+
+def test_ad_planning_formats_and_languages_filters():
+    from metaads.performance import format_stats, image_share
+    from metaads.planning import build_plan
+    from test_planning import inputs, _decided
+
+    stats = format_stats(_decided("video", 0, 10) + _decided("image", 0, 10), BASE)
+    # unconstrained format split: merit-based / 50-50
+    both_formats = changed(ad_planning={"formats": ["video", "image"]})
+    assert image_share(stats, both_formats) == pytest.approx(0.5)
+
+    # formats: [video] forces image_share to 0.0
+    video_only = changed(ad_planning={"formats": ["video"]})
+    assert image_share(stats, video_only) == 0.0
+
+    # languages: [hi] restricts planned campaigns to Hindi only
+    hindi_only = changed(ad_planning={"languages": ["hi"], "formats": ["video"]})
+    plan = build_plan(inputs(languages=["Hindi", "Telugu", "Kannada"]), hindi_only)
+    assert len(plan["campaigns"]) == 1
+    assert plan["campaigns"][0]["language"] == "Hindi"
+    assert plan["campaigns"][0]["new_hook_image_ads"] == 0
+    assert plan["campaigns"][0]["new_hook_video_ads"] > 0

@@ -14,6 +14,9 @@ from metaads.planning import (Inputs, PlanningError, Planner, allocate, build_pl
                               next_midnight, project)
 
 BASE = load_settings().to_dict()
+# test_planning tests the unconstrained baseline (all languages, merit-based format split)
+BASE["ad_planning"].pop("languages", None)
+BASE["ad_planning"].pop("formats", None)
 NOW = datetime(2026, 11, 1, 14, 0, tzinfo=IST)               # 2pm: the next 06:00 IST start is 2 Nov -> 29 launch days
 DEFAULT_BODY = BASE["default_body"]
 

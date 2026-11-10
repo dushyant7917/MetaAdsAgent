@@ -253,6 +253,9 @@ def build_plan(inp: Inputs, settings: Settings) -> dict:
                      f"prior ({cfg.prior_win_rate:.0%}) and will sharpen as results come in.")
 
     languages = inp.languages
+    if "languages" in cfg:
+        wanted = [settings.languages[c] if c in settings.languages else c for c in cfg.languages]
+        languages = [l for l in languages if l in wanted]
     hooks = {lang: proven_hooks(inp.adsets, lang, settings) for lang in languages}
     winners = {lang: reusable for lang, (reusable, _) in hooks.items()}
     for lang, (_, retired) in hooks.items():

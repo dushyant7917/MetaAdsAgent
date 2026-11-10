@@ -70,8 +70,14 @@ def format_stats(adsets: list[AdSet], settings: Settings) -> dict[str, dict]:
 def image_share(stats: dict[str, dict], settings: Settings) -> float:
     """Share of new-hook ads to make as image ads, purely on merit: the image win rate against both. A format that
     has had format_give_up_after decided ad sets without a single win gets none while the other format has won."""
+    cfg = settings.ad_planning
+    formats = list(cfg.get("formats", (FORMAT_VIDEO, FORMAT_IMAGE)))
+    if FORMAT_IMAGE not in formats:
+        return 0.0
+    if FORMAT_VIDEO not in formats:
+        return 1.0
     image, video = stats[FORMAT_IMAGE], stats[FORMAT_VIDEO]
-    give_up = settings.ad_planning.format_give_up_after
+    give_up = cfg.format_give_up_after
     if image["decided"] >= give_up and not image["wins"] and video["wins"]:
         return 0.0
     if video["decided"] >= give_up and not video["wins"] and image["wins"]:
