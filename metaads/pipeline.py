@@ -301,7 +301,7 @@ class Pipeline:
             except Exception as exc:
                 log.exception("job %s attempt %s failed", job_id, attempt)
                 err = f"{type(exc).__name__}: {exc}"
-                final = attempt == attempts or not getattr(exc, "retryable", True)   # policy blocks cannot succeed on retry
+                final = attempt == attempts or not getattr(exc, "retryable", True)   # a lost hook file cannot come back on retry
                 self.store.update_job(job_id, status="failed" if final else "running", error=err)
                 if final:
                     break

@@ -14,8 +14,7 @@ class VideoGenerationError(RuntimeError):
 
 
 class VideoBlockedError(VideoGenerationError):
-    """Content-policy refusal that is final (the pipeline does not retry it either)."""
-    retryable = False
+    """Veo returned no video (safety filter); retried like any other failure, since the filter can pass on a new try."""
 
 
 def _status(exc: Exception) -> int | None:

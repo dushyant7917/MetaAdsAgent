@@ -174,7 +174,7 @@ def test_failure_in_one_item_does_not_stop_the_others(env):
     assert (st["done"], st["failed"]) == (2, 1)                       # the blocked item failed; it did not become an image ad
     assert [a["status"] for a in st["ads"]] == ["done", "failed", "done"]
     assert [a["ad_format"] for a in st["ads"]] == ["video", "video", "video"]
-    assert fakes.calls["video"] == 3 and fakes.calls["image"] == 3    # the blocked item was NOT retried, no image ad made
+    assert fakes.calls["video"] == 4 and fakes.calls["image"] == 3    # the blocked item was retried once (its image kept), no image ad made
     assert "content policy" in st["ads"][1]["error"]
     assert rec.texts[-1].startswith("⚠️ 2 of 3 ads created") and "image ads" not in rec.texts[-1]
 

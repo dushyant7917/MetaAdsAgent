@@ -87,12 +87,12 @@ def test_vertex_other_error_is_not_retried(monkeypatch, tmp_path):
     assert seen["calls"] == 1
 
 
-def test_vertex_safety_filtered_result_is_final(monkeypatch, tmp_path):
+def test_vertex_safety_filtered_result_is_retryable(monkeypatch, tmp_path):
     empty = type("R", (), {"generated_videos": [], "rai_media_filtered_reasons": ["face"]})()
     _fake_vertex(monkeypatch, final=FakeOp(True, empty))
     with pytest.raises(VideoBlockedError) as e:
         generate_video("x", "hi", tmp_path / "o.mp4", 4, _png(tmp_path), BASE, RateLimiter(1000))
-    assert e.value.retryable is False
+    assert e.value.retryable is True
 
 
 def test_vertex_needs_the_image(tmp_path):
