@@ -55,7 +55,7 @@ class Inputs:
     adsets: list[AdSet]
     used_pairs: set[tuple[str, str, str, str | None]]     # (language code, spoken text, thumbnail text, body) already made
     bodies: dict[str, list[str]]                     # language code -> available body stems
-    video_calls_today: int
+    videos_made_today: int
 
 
 @dataclass
@@ -278,7 +278,7 @@ def build_plan(inp: Inputs, settings: Settings) -> dict:
     fresh_total = sum(fresh for _, fresh in split.values())
     images = (allocate(round(fresh_total * share), {lang: fresh for lang, (_, fresh) in split.items() if fresh}, rank)
               if fresh_total else {})
-    video_room = max(0, settings.limits.daily_video_cap - inp.video_calls_today)
+    video_room = max(0, settings.limits.daily_video_cap - inp.videos_made_today)
     campaigns_out, planned = [], 0
     for lang in order:
         proven, fresh = split[lang]
@@ -422,7 +422,7 @@ class Planner:
         return Inputs(now=now, languages=sorted(set(self.campaigns.values())), spent_mtd=sum(float(r.get("spend") or 0) for r in month), adsets=adsets,
                       used_pairs=self.store.hook_body_pairs(),
                       bodies={code: available_bodies(self.s, code) for code in self.s.languages},
-                      video_calls_today=self.store.video_calls_today())
+                      videos_made_today=self.store.videos_made_today())
 
 
 def main() -> int:

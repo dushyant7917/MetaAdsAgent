@@ -187,7 +187,7 @@ class Pipeline:
             for i, pick in zip(pending, picks):                  # a text longer than the longest clip gets that clip
                 clean[i]["duration"] = pick["clip_seconds"]
                 clean[i]["estimate"] = json.dumps(pick)
-        used, videos = self.store.video_calls_today(), sum(it["ad_format"] == FORMAT_VIDEO for it in clean)
+        used, videos = self.store.videos_made_today(), sum(it["ad_format"] == FORMAT_VIDEO for it in clean)
         if used + videos > self.s.limits.daily_video_cap:
             raise ValidationError(f"Daily video cap {self.s.limits.daily_video_cap}: {used} used today, "
                                   f"{videos} requested")
@@ -337,12 +337,12 @@ class Pipeline:
         clip = file("video")
         if not clip.exists():
             stage("video")
-            if self.store.video_calls_today() >= self.s.limits.daily_video_cap:
+            if self.store.videos_made_today() >= self.s.limits.daily_video_cap:
                 raise RuntimeError(f"Daily video cap of {self.s.limits.daily_video_cap} reached")
-            self.store.record_video_call()
             tmp = work / "video.part.mp4"
             self.services.video(spoken_text, lang, tmp, duration, image)
             os.replace(tmp, clip)
+            self.store.record_video_made()                     # only a clip that came back counts, not a failed or blocked try
         clip_duration = media.probe(clip, self.s).duration
 
         words_file = file("transcribe")

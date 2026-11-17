@@ -174,7 +174,7 @@ def test_failure_in_one_item_does_not_stop_the_others(env):
     assert (st["done"], st["failed"]) == (2, 1)                       # the blocked item failed; it did not become an image ad
     assert [a["status"] for a in st["ads"]] == ["done", "failed", "done"]
     assert [a["ad_format"] for a in st["ads"]] == ["video", "video", "video"]
-    assert fakes.calls["video"] == 4 and fakes.calls["image"] == 3    # the blocked item was retried once (its image kept), no image ad made
+    assert fakes.calls["video"] == 2 + BASE.limits.job_attempts and fakes.calls["image"] == 3   # the blocked item was retried (its image kept), no image ad made
     assert "content policy" in st["ads"][1]["error"]
     assert rec.texts[-1].startswith("⚠️ 2 of 3 ads created") and "image ads" not in rec.texts[-1]
 
@@ -194,8 +194,8 @@ def test_a_clip_with_no_recognized_speech_gets_a_guessed_poster_window_on_the_la
     batch = p.submit([{"language": "hi", "spoken_text": "ok one"}], chat_id="42", background=False)
     st = p.status(batch)["ads"][0]
     job = p.store.get_job(st["job_id"])
-    assert (job["status"], job["attempts"]) == ("done", 2) and fakes.calls["video"] == 1   # no new Veo clip
-    assert fakes.transcribe_calls == 1                                # the last attempt does not ask Whisper again
+    assert (job["status"], job["attempts"]) == ("done", BASE.limits.job_attempts) and fakes.calls["video"] == 1   # no new Veo clip
+    assert fakes.transcribe_calls == BASE.limits.job_attempts - 1     # the last attempt does not ask Whisper again
     s, _ = env
     work = Path(s.paths.work_dir) / st["job_id"]
     assert json.loads((work / "words.json").read_text()) == []        # recorded, so a redo does not transcribe again
@@ -221,7 +221,7 @@ def test_when_the_hook_video_fails_even_after_the_retry_the_ad_fails_and_no_imag
     batch = p.submit([{"language": "hi", "spoken_text": "Dialogue words", "thumbnail_text": "Headline"}],
                      chat_id="42", background=False)
     st = p.status(batch)["ads"][0]
-    assert fakes.calls["video"] == 2                                  # tried, retried, then gave up
+    assert fakes.calls["video"] == BASE.limits.job_attempts           # tried, retried, then gave up
     job = p.store.get_job(st["job_id"])
     assert (job["status"], job["ad_format"], job["stage"]) == ("failed", "video", "video") and "Veo is down" in job["error"]
     assert fakes.image_requests == [("Headline", "reporter")]         # no image ad was made
@@ -236,7 +236,7 @@ def test_an_image_ad_can_be_asked_for_and_makes_no_video_duration_or_cap_use(env
     job = p.store.get_job(p.status(batch)["ads"][0]["job_id"])
     assert (job["status"], job["ad_format"], job["duration"]) == ("done", "image", None)
     assert fakes.calls == {"image": 1, "video": 0} and fakes.duration_calls == []
-    assert fakes.image_requests == [("Headline", "image_ad")] and p.store.video_calls_today() == 0
+    assert fakes.image_requests == [("Headline", "image_ad")] and p.store.videos_made_today() == 0
     assert len(rec.photos) == 1 and rec.photos[0][1].startswith("🖼 Image ad · Ad 1/1 · Tamil\nSays: Dialogue words\nThumbnail: Headline\nid ")
 
 
@@ -302,7 +302,7 @@ def test_validation_is_all_or_nothing(env):
         p.submit([{"language": "hi", "spoken_text": "fine", "body": "purple"}], background=False)
     with pytest.raises(ValidationError, match="At most"):
         p.submit([{"language": "hi", "spoken_text": "x"}] * (BASE.limits.max_batch_items + 1), background=False)
-    assert p.store.video_calls_since(0) == 0                           # nothing ran
+    assert p.store.videos_made_since(0) == 0                           # nothing ran
 
 
 def test_duration_failure_refuses_the_batch_before_anything_is_generated(env):
@@ -446,3 +446,11 @@ def test_set_review_stamps_the_decision_time_and_rejects_unknown_states(env):
     assert row["review"] == "dropped" and row["reviewed"] and p.store.awaiting_review_jobs() == []
     with pytest.raises(ValueError):
         p.store.set_review([job], "maybe")
+
+
+def test_the_daily_video_cap_counts_clips_made_not_tries(env):
+    fakes = Fakes(video_fail_first=True)                              # the first try fails, the retry makes the clip
+    p, _ = _pipeline(env, fakes)
+    batch = p.submit([{"language": "hi", "spoken_text": "retry me"}], background=False)
+    assert p.status(batch)["done"] == 1 and fakes.calls["video"] == 2
+    assert p.store.videos_made_today() == 1

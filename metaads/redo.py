@@ -130,7 +130,7 @@ class RedoPlanner:
                 start = i
                 break
         redo_stages = STAGES[start:]
-        if "video" in redo_stages and self.p.store.video_calls_today() + 1 > self.p.s.limits.daily_video_cap:
+        if "video" in redo_stages and self.p.store.videos_made_today() + 1 > self.p.s.limits.daily_video_cap:
             raise ValidationError(f"Daily video cap {self.p.s.limits.daily_video_cap} is reached, so a new Veo clip "
                                   f"cannot be made today.")
 
@@ -240,7 +240,7 @@ class RedoPlanner:
         start = a["start"]
         is_image_ad = a.get("format") == FORMAT_IMAGE
         if (not is_image_ad and start <= STAGES.index("video")
-                and self.p.store.video_calls_today() + 1 > self.p.s.limits.daily_video_cap):
+                and self.p.store.videos_made_today() + 1 > self.p.s.limits.daily_video_cap):
             raise ValidationError("Daily video cap reached, so a new Veo clip cannot be made today.")
         if not self.p.store.set_redo_plan_status(plan_id, "pending", "approved"):
             raise ValidationError(f"Plan {plan_id} was already used.")

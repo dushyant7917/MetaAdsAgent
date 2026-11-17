@@ -152,12 +152,12 @@ limits:
   max_meta_upload: 10          # ads per upload_ads request
   image_rpm: 140
   video_rpm: 4
-  job_attempts: 2              # a failing ad is tried this often; stages already done are not repeated (after the last try the ad fails)
+  job_attempts: 5              # a failing ad is tried this often (the first try and 4 retries); stages already done are not repeated (after the last try the ad fails)
   heartbeat_attempts: 2        # one healthchecks.io ping is tried this often
   list_ads_default: 10
   list_ads_max: 30
   max_batch_items: 40
-  daily_video_cap: 40
+  daily_video_cap: 100         # video clips Veo returned per day (a failed or blocked try is not counted)
 
 autopause:                     # metaads.autopause, runs as set in schedules (scripts/install_autopause_timer.sh): pauses losing ACTIVE ad sets
   result_action_type: start_trial_total   # Ads Manager's "Results" for a START_TRIAL ad set, read from metric_field

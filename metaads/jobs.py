@@ -191,18 +191,18 @@ class JobStore:
                             "AND status IN ('queued','running')", (new_owner, time.time(), job_id, old_owner))
             return cur.rowcount == 1
 
-    def record_video_call(self) -> None:
+    def record_video_made(self) -> None:
         with closing(self._conn()) as c, c:
             c.execute("INSERT INTO video_calls VALUES (?)", (time.time(),))
 
-    def video_calls_since(self, since: float) -> int:
+    def videos_made_since(self, since: float) -> int:
         with closing(self._conn()) as c:
             return c.execute("SELECT COUNT(*) FROM video_calls WHERE ts>=?", (since,)).fetchone()[0]
 
-    def video_calls_today(self) -> int:
-        """Video generations since local midnight: what the daily video cap counts."""
+    def videos_made_today(self) -> int:
+        """Video clips Veo returned since local midnight: what the daily video cap counts (the table keeps its old name)."""
         midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
-        return self.video_calls_since(midnight)
+        return self.videos_made_since(midnight)
 
     # ---- budget increases made by metaads.budget: when each ad set was last raised (budgets are in paise)
     def last_budget_increases(self) -> dict[str, float]:

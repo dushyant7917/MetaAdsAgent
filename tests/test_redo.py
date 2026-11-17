@@ -85,10 +85,11 @@ def test_moving_the_poster_of_an_ad_with_no_transcript_needs_no_whisper_and_no_v
     p, _ = _pipeline(env, fakes)
     job = p.status(p.submit([HI], chat_id="42", background=False))["ads"][0]["job_id"]
     rp = RedoPlanner(p)
-    assert fakes.transcribe_calls == 1 and fakes.calls == {"image": 1, "video": 1}
+    asked = env[0].limits.job_attempts - 1                                          # every attempt but the last asked Whisper
+    assert fakes.transcribe_calls == asked and fakes.calls == {"image": 1, "video": 1}
     plan, done = _run(p, rp, job, ["poster_timing"], poster_start=1.0, poster_end=2.5)
     assert steps(plan["will_redo"]) == ["plan", "render_hook", "merge"] and not plan["notes"]
-    assert fakes.transcribe_calls == 1 and fakes.calls == {"image": 1, "video": 1}     # only the hook is rendered again
+    assert fakes.transcribe_calls == asked and fakes.calls == {"image": 1, "video": 1}     # only the hook is rendered again
     plan_file = Path(env[0].paths.work_dir) / done["job_id"] / "plan.json"          # the new ad's own plan file
     assert json.loads(plan_file.read_text())["method"] == "manual"
     assert json.loads(plan_file.read_text())["window"] == {"start": 1.0, "end": 2.5}
