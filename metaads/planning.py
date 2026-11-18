@@ -228,17 +228,20 @@ def require_monthly_budget(settings: Settings) -> float:
 def build_plan(inp: Inputs, settings: Settings) -> dict:
     cfg = settings.ad_planning
     monthly = require_monthly_budget(settings)
+    tax = 1.0 + float(cfg.get("gst_pct", 0) or 0) / 100.0
     fresh_daily = paise_to_inr(settings.meta.daily_budget)
     notes: list[str] = []
 
-    remaining = monthly - inp.spent_mtd
+    spent_mtd = inp.spent_mtd * tax
+    remaining = monthly - spent_mtd
     days = launch_days_left(inp.now, settings)
     end = month_end(inp.now)
     projections = [project(a, inp.now, end, settings) for a in inp.adsets if a.active]
-    committed = sum(p.committed for p in projections)
+    committed = sum(p.committed for p in projections) * tax
     reserve = max(0.0, remaining) * reserve_pct(inp.now, settings) / 100
     free = remaining - committed - reserve
-    cost, pooled_win_rate, decided = cost_of_new_ad(inp.adsets, days, settings)
+    cost_net, pooled_win_rate, decided = cost_of_new_ad(inp.adsets, days, settings)
+    cost = cost_net * tax
 
     total = 0
     if days == 0:
@@ -308,7 +311,9 @@ def build_plan(inp: Inputs, settings: Settings) -> dict:
     return {
         "as_of": inp.now.astimezone(IST).isoformat(timespec="minutes"),
         "monthly_budget_inr": inr(monthly),
-        "spent_this_month_inr": inr(inp.spent_mtd),
+        "spent_this_month_inr": inr(spent_mtd),
+        "net_spent_this_month_inr": inr(inp.spent_mtd),
+        "gst_pct": float(cfg.get("gst_pct", 0) or 0),
         "budget_left_inr": inr(remaining),
         "launch_day": launch_day(inp.now, settings).isoformat(),
         "launch_days_left": days,

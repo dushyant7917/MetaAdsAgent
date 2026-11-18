@@ -17,6 +17,7 @@ BASE = load_settings().to_dict()
 # test_planning tests the unconstrained baseline (all languages, merit-based format split)
 BASE["ad_planning"].pop("languages", None)
 BASE["ad_planning"].pop("formats", None)
+BASE["ad_planning"].pop("gst_pct", None)
 NOW = datetime(2026, 11, 1, 14, 0, tzinfo=IST)               # 2pm: the next 06:00 IST start is 2 Nov -> 29 launch days
 DEFAULT_BODY = BASE["default_body"]
 
@@ -394,3 +395,23 @@ def test_planner_refuses_before_any_call_when_the_budget_is_unset(tmp_path):
     with pytest.raises(PlanningError):
         Planner(settings(tmp_path, monthly_budget_inr=0), client, "111", {"c-hi": "Hindi"}, JobStore(tmp_path / "j.db")).run()
     assert fake.reads == []
+
+
+def test_gst_accounts_for_18_percent():
+    # Spent 5,000 net -> 5,900 with 18% GST; budget left = 200,000 - 5,900 = 194,100
+    cfg = settings(gst_pct=18)
+    plan = build_plan(inputs(spent=5000), cfg)
+    assert plan["net_spent_this_month_inr"] == 5000.0
+    assert plan["spent_this_month_inr"] == 5900.0
+    assert plan["budget_left_inr"] == 194100.0
+    assert plan["gst_pct"] == 18.0
+
+
+def test_gst_scales_committed_and_cost():
+    # Verify that committed and expected cost per new ad scale with GST
+    cfg_no_tax = settings(gst_pct=0)
+    cfg_tax = settings(gst_pct=18)
+    plan_no_tax = build_plan(inputs(), cfg_no_tax)
+    plan_tax = build_plan(inputs(), cfg_tax)
+    assert plan_tax["expected_cost_per_new_ad_inr"] == round(plan_no_tax["expected_cost_per_new_ad_inr"] * 1.18, 2)
+
